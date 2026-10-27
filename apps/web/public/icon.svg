@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="ionic" x1="15%" y1="15%" x2="85%" y2="85%">
+      <stop offset="0" stop-color="#74b8f5"/>
+      <stop offset="1" stop-color="#7653e7"/>
+    </linearGradient>
+  </defs>
+  <path d="M 66 39 A 23 23 0 1 1 59 34" fill="none" stroke="url(#ionic)" stroke-linecap="round" stroke-width="12"/>
+  <circle cx="72" cy="28" r="8" fill="url(#ionic)"/>
+</svg>

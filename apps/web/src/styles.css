@@ -1,0 +1,59 @@
+:root {
+  color-scheme: light;
+  --ionic-color-background: #f2f4fb;
+  --ionic-color-surface: #ffffff;
+  --ionic-color-text: #1b2340;
+  --ionic-color-muted: #526079;
+  --ionic-color-primary: #4c5fdb;
+  --ionic-color-accent: #8052e8;
+  --ionic-color-primary-soft: #eceeff;
+  --ionic-color-primary-soft-text: #3e4caa;
+  --ionic-color-outline: #dbe1ef;
+  --ionic-gradient-brand: linear-gradient(118deg, #4d83ed 0%, #5f67e8 52%, #8650e6 100%);
+  --ionic-gradient-soft: linear-gradient(135deg, #f1f5ff 0%, #f8f4ff 100%);
+  --ion-color-primary: #4c5fdb;
+  --ion-color-primary-rgb: 76, 95, 219;
+  --ion-color-primary-contrast: #ffffff;
+  --ion-color-primary-contrast-rgb: 255, 255, 255;
+  --ion-color-primary-shade: #3e50c5;
+  --ion-color-primary-tint: #6174e5;
+  --ion-background-color: #f2f4fb;
+  --ion-text-color: #1b2340;
+  --ion-font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--ion-font-family);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* { box-sizing: border-box; }
+html, body { width: 100%; min-width: 320px; min-height: 100%; margin: 0; background: var(--ionic-color-background); }
+body { color: var(--ionic-color-text); }
+ionic-root { display: block; min-height: 100dvh; }
+button, input, textarea, select { font-family: inherit; }
+
+ion-modal.compose-modal, ion-modal.preferences-modal, ion-modal.auth-modal {
+  --width: min(540px, calc(100vw - 36px));
+  --height: auto;
+  --border-radius: 17px;
+  --backdrop-opacity: 0.38;
+}
+ion-modal.compose-modal::part(content), ion-modal.preferences-modal::part(content), ion-modal.auth-modal::part(content) {
+  max-height: min(90dvh, 720px);
+  border: 1px solid var(--ionic-color-outline);
+  border-radius: 17px;
+  background: var(--ionic-color-surface);
+}
+@media (max-width: 760px) {
+  ion-modal.compose-modal, ion-modal.preferences-modal, ion-modal.auth-modal {
+    align-items: flex-end;
+    --width: 100%;
+    --border-radius: 18px 18px 0 0;
+  }
+  ion-modal.compose-modal::part(content), ion-modal.preferences-modal::part(content), ion-modal.auth-modal::part(content) {
+    max-height: 90dvh;
+    border: 0;
+    border-radius: 18px 18px 0 0;
+  }
+}

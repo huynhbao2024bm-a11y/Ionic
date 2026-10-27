@@ -1,0 +1,16 @@
+{
+  "name": "Ionic — Mạng xã hội",
+  "short_name": "Ionic",
+  "description": "Bài viết, video, trò chuyện và kết nối.",
+  "lang": "vi",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f5f7fa",
+  "theme_color": "#f5f7fa",
+  "icons": [
+    { "src": "ionic-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "ionic-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "ionic-icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

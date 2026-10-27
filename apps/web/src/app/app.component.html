@@ -1,0 +1,452 @@
+<ion-app>
+<div class="app-frame">
+  <aside class="desktop-rail" aria-label="Điều hướng chính">
+    <div class="brand-lockup">
+      <img class="brand-logo" src="ionic-logo-lockup.png" alt="Ionic">
+    </div>
+
+    <nav class="primary-nav">
+      <button class="nav-item" [class.selected]="page() === 'home'" (click)="navigate('home')">
+        <ion-icon name="home-outline" aria-hidden="true"></ion-icon><span>Trang chủ</span>
+      </button>
+      <button class="nav-item" [class.selected]="page() === 'video'" (click)="navigate('video')">
+        <ion-icon name="play-circle-outline" aria-hidden="true"></ion-icon><span>Video</span>
+      </button>
+      <button class="nav-item" (click)="openComposer()">
+        <ion-icon name="add-outline" aria-hidden="true"></ion-icon><span>Tạo bài</span>
+      </button>
+      <button class="nav-item" [class.selected]="page() === 'messages'" (click)="navigate('messages')">
+        <ion-icon name="chatbubble-outline" aria-hidden="true"></ion-icon><span>Tin nhắn</span>
+      </button>
+      <button class="nav-item" [class.selected]="page() === 'profile'" (click)="openOwnProfile()">
+        <ion-icon name="person-outline" aria-hidden="true"></ion-icon><span>Hồ sơ</span>
+      </button>
+    </nav>
+
+    <button class="primary-button rail-create" (click)="openComposer()"><ion-icon name="add-outline" aria-hidden="true"></ion-icon>Đăng bài</button>
+    <div class="rail-note">
+      @if (currentUser()) {
+        <strong>Đã đăng nhập</strong>
+        <span>{{ '@' + currentUser()?.handle }} · bài mới được lưu</span>
+        <button class="text-button" (click)="signOut()">Đăng xuất</button>
+      } @else {
+        <strong>Bạn đang xem bản thử</strong>
+        <span>Dữ liệu minh họa · chưa đăng nhập</span>
+        <button class="text-button" (click)="openAuth('login')">Đăng nhập</button>
+      }
+    </div>
+  </aside>
+
+  <main class="main-zone">
+    <header class="mobile-header">
+      <button class="mobile-brand" aria-label="Về trang chủ" (click)="navigate('home')">
+        <img class="brand-logo" src="ionic-logo-lockup.png" alt="">
+      </button>
+      <div class="mobile-header-actions">
+        <button class="icon-button" aria-label="Tìm kiếm" [attr.aria-expanded]="searchOpen()" (click)="toggleSearch()">
+          <ion-icon name="search-outline" aria-hidden="true"></ion-icon>
+        </button>
+        <button class="avatar avatar-small" [attr.aria-label]="currentUser() ? 'Mở hồ sơ của ' + currentUser()?.displayName : 'Mở hồ sơ demo'" (click)="openOwnProfile()">{{ currentUser()?.displayName?.slice(0, 1)?.toLocaleUpperCase('vi') ?? 'B' }}</button>
+      </div>
+    </header>
+
+    @if (searchOpen()) {
+      <div class="mobile-search">
+        <ion-icon name="search-outline" aria-hidden="true"></ion-icon>
+        <input type="search" aria-label="Tìm bài viết hoặc tài khoản" placeholder="Tìm bài viết hoặc tài khoản" [value]="query()" (input)="updateSearch($event)">
+        @if (query()) { <button class="icon-button" aria-label="Xóa nội dung tìm kiếm" (click)="clearSearch()"><ion-icon name="close-outline"></ion-icon></button> }
+      </div>
+    }
+
+    @if (page() === 'home') {
+      <div class="home-grid">
+        <section class="feed-column" aria-label="Bảng tin">
+          <label class="desktop-search search-field">
+            <ion-icon name="search-outline" aria-hidden="true"></ion-icon>
+            <input type="search" aria-label="Tìm bài viết hoặc tài khoản" placeholder="Tìm bài viết hoặc tài khoản" [value]="query()" (input)="updateSearch($event)">
+            @if (query()) { <button class="icon-button" aria-label="Xóa nội dung tìm kiếm" (click)="clearSearch()"><ion-icon name="close-outline"></ion-icon></button> }
+          </label>
+
+          <div class="feed-heading">
+            <h1><ion-icon name="newspaper-outline" aria-hidden="true"></ion-icon>Bảng tin</h1>
+            <button class="text-button feed-settings-link" aria-label="Điều chỉnh bảng tin" (click)="openPreferences()"><ion-icon name="options-outline" aria-hidden="true"></ion-icon><span>Điều chỉnh</span></button>
+          </div>
+
+          <div class="feed-switch" role="group" aria-label="Chọn bảng tin">
+            <button [attr.aria-pressed]="feedMode() === 'for-you'" [class.active]="feedMode() === 'for-you'" (click)="setFeed('for-you')">
+              <ion-icon name="newspaper-outline" aria-hidden="true"></ion-icon>
+              Dành cho bạn
+            </button>
+            <button [attr.aria-pressed]="feedMode() === 'following'" [class.active]="feedMode() === 'following'" (click)="setFeed('following')"><ion-icon name="people-outline" aria-hidden="true"></ion-icon>Đang theo dõi</button>
+          </div>
+
+          @if (!currentUser()) {
+            <div class="prototype-notice" role="note">
+              <ion-icon name="information-circle-outline" aria-hidden="true"></ion-icon>
+              <span>Bản xem thử · Dữ liệu minh họa, thao tác chưa được lưu.</span>
+            </div>
+          }
+
+          <button class="composer-entry" (click)="openComposer()">
+            <span class="avatar avatar-small">B</span>
+            <span class="composer-placeholder">Chia sẻ điều bạn đang nghĩ...</span>
+            <span class="composer-icon"><ion-icon name="add-outline" aria-hidden="true"></ion-icon></span>
+          </button>
+
+          @if (query() && searchSuggestions().length) {
+            <section class="search-results" aria-label="Tài khoản khớp với tìm kiếm">
+              <h2>Tài khoản</h2>
+              @for (person of searchSuggestions(); track person.handle) {
+                <div class="search-account-row">
+                  <span class="avatar avatar-small">{{ person.initials }}</span>
+                  <button class="suggestion-profile" [disabled]="!person.isLive" (click)="openProfile(person.handle)"><strong>{{ person.name }}</strong><span>{{ person.handle }}</span></button>
+                  <button class="text-button follow-button" [disabled]="person.isLive && followBusyHandles().has(person.handle.slice(1))" [attr.aria-pressed]="person.isFollowing" (click)="toggleFollow(person.handle)">{{ person.isFollowing ? 'Đang theo dõi' : 'Theo dõi' }}</button>
+                </div>
+              }
+            </section>
+          }
+
+          @if (currentUser() && query().trim().length === 1) {
+            <p class="inline-state" role="status">Nhập ít nhất 2 ký tự để tìm bài viết và tài khoản.</p>
+          }
+          @if (currentUser() && query().trim().length >= 2) {
+            <h2 class="search-section-title">Bài viết</h2>
+            @if (postSearchBusy()) { <p class="inline-state" role="status">Đang tìm bài viết…</p> }
+            @if (postSearchError()) { <p class="inline-state error-state" role="alert">{{ postSearchError() }}</p> }
+          }
+
+          @if (currentUser() && !query().trim() && feedMode() === 'following' && followingBusy()) { <p class="inline-state" role="status">Đang tải bài viết…</p> }
+          @if (currentUser() && !query().trim() && feedMode() === 'following' && followingError()) { <p class="inline-state error-state" role="alert">{{ followingError() }}</p> }
+          @if (currentUser() && !query().trim() && feedMode() === 'for-you' && forYouBusy()) { <p class="inline-state" role="status">Đang sắp xếp bài viết…</p> }
+          @if (currentUser() && !query().trim() && feedMode() === 'for-you' && forYouError()) { <p class="inline-state error-state" role="alert">{{ forYouError() }}</p> }
+          <div class="post-list">
+            @for (post of visiblePosts(); track post.id) {
+              <article class="post-card" [attr.aria-labelledby]="'author-' + post.id">
+                <header class="post-author-row">
+                  <span class="avatar">{{ post.initials }}</span>
+                  <div class="author-copy">
+                    <h2 [id]="'author-' + post.id">{{ post.author }}</h2>
+                    <p>{{ post.handle }} · {{ post.time }}</p>
+                  </div>
+                  <div class="post-menu-wrap">
+                    <button class="icon-button post-more" [attr.aria-label]="'Tùy chọn bài viết của ' + post.author" [attr.aria-expanded]="activeMenuId() === post.id" (click)="toggleMenu(post.id)">
+                      <ion-icon name="ellipsis-horizontal" aria-hidden="true"></ion-icon>
+                    </button>
+                    @if (activeMenuId() === post.id) {
+                      <div class="post-menu" role="group" aria-label="Tùy chọn bài viết">
+                        <button (click)="updateContentPreference(post, 'more')">Xem thêm nội dung tương tự</button>
+                        <button (click)="updateContentPreference(post, 'less')">Xem ít nội dung tương tự</button>
+                        <button (click)="hidePost(post.id)">Ẩn bài viết</button>
+                        @if (currentUser() && post.handle !== '@' + currentUser()?.handle) { <button [disabled]="muteBusyHandles().has(post.handle.slice(1))" (click)="mutePostAuthor(post)">Tắt tiếng tài khoản</button> }
+                        <button (click)="reportPost(post.id)">Báo cáo nội dung</button>
+                      </div>
+                    }
+                  </div>
+                </header>
+
+                @if (post.kind === 'short_video' && post.mimeType) {
+                  <video class="feed-video" controls playsinline preload="none" [src]="videoPlaybackUrl(post.id)" [ionicVideoSignal]="post.id" [attr.aria-label]="'Video của ' + post.author"></video>
+                }
+                <p class="post-body">{{ post.text }}</p>
+
+                <div class="post-actions">
+                  <button class="post-action" [disabled]="replyBusy() && activeReplyId() === post.id" [attr.aria-label]="'Trả lời, ' + post.replies + ' phản hồi'" (click)="openReplies(post.id)">
+                    <ion-icon name="chatbubble-outline" aria-hidden="true"></ion-icon><span>{{ post.replies }} Trả lời</span>
+                  </button>
+                  <button class="post-action like-action" [disabled]="postActionBusy().has('like:' + post.id)" [class.is-active]="post.liked" [attr.aria-pressed]="post.liked" [attr.aria-label]="post.liked ? 'Bỏ thích' : 'Thích bài viết'" (click)="toggleLike(post.id)">
+                    <ion-icon [name]="post.liked ? 'heart' : 'heart-outline'" aria-hidden="true"></ion-icon><span>{{ post.likes }} Thích</span>
+                  </button>
+                  <button class="post-action" [disabled]="postActionBusy().has('save:' + post.id)" [class.is-active]="post.saved" [attr.aria-pressed]="post.saved" (click)="toggleSave(post.id)">
+                    <ion-icon [name]="post.saved ? 'bookmark' : 'bookmark-outline'" aria-hidden="true"></ion-icon><span>{{ post.saved ? 'Đã lưu' : 'Lưu' }}</span>
+                  </button>
+                  <button class="post-action share-action" (click)="sharePost(post)">
+                    <ion-icon name="share-outline" aria-hidden="true"></ion-icon><span>Chia sẻ</span>
+                  </button>
+                </div>
+
+                @if (activeReplyId() === post.id) {
+                  @if (replyBusy()) { <p class="inline-state" role="status">Đang tải phản hồi…</p> }
+                  @if (replyError()) { <p class="inline-state error-state" role="alert">{{ replyError() }}</p> }
+                  @for (reply of post.replyMessages; track $index) {
+                    <p class="reply-preview">{{ reply }}</p>
+                  }
+                  <form class="reply-form" (submit)="$event.preventDefault(); submitReply(post)">
+                    <label class="visually-hidden" [attr.for]="'reply-' + post.id">Viết phản hồi</label>
+                    <input [id]="'reply-' + post.id" type="text" maxlength="500" placeholder="Viết phản hồi..." [value]="replyText()" (input)="updateReplyText($event)">
+                    <button class="text-button" type="submit" [disabled]="!replyText().trim() || replyBusy()">{{ replyBusy() ? 'Đang gửi…' : 'Gửi' }}</button>
+                  </form>
+                }
+              </article>
+            } @empty {
+              @if (!(currentUser() && query().trim().length === 1) && !(currentUser() && query().trim().length >= 2 && (postSearchBusy() || postSearchError())) && !(currentUser() && !query().trim() && ((feedMode() === 'following' && (followingBusy() || followingError())) || (feedMode() === 'for-you' && (forYouBusy() || forYouError()))))) {
+                <div class="empty-state">
+                  <span class="empty-icon"><ion-icon [name]="query() ? 'search-outline' : 'people-outline'" aria-hidden="true"></ion-icon></span>
+                  <h2>{{ query() ? 'Không có bài viết khớp' : (feedMode() === 'following' && currentUser() ? 'Chưa có bài viết mới' : (currentUser() ? 'Chưa có bài viết phù hợp' : 'Bảng tin đang trống')) }}</h2>
+                  <p>{{ query() ? 'Thử từ khóa khác hoặc xóa tìm kiếm. Tài khoản khớp được hiển thị phía trên.' : (feedMode() === 'following' && currentUser() ? 'Bài viết mới từ các tài khoản bạn theo dõi sẽ hiện ở đây.' : (currentUser() ? 'Bài viết công khai sẽ xuất hiện khi có nội dung phù hợp.' : 'Theo dõi thêm tài khoản hoặc quay lại Dành cho bạn.')) }}</p>
+                  @if (!query()) { <button class="secondary-button" (click)="setFeed('for-you')">Xem Dành cho bạn</button> }
+                  @else { <button class="secondary-button" (click)="clearSearch()">Xóa tìm kiếm</button> }
+                </div>
+              }
+            }
+            @if (currentUser() && query().trim().length >= 2 && postSearchNextCursor()) { <button class="secondary-button load-more" [disabled]="postSearchBusy()" (click)="loadMorePostSearch()">{{ postSearchBusy() ? 'Đang tải…' : 'Tải thêm kết quả' }}</button> }
+            @if (currentUser() && !query().trim() && feedMode() === 'following' && followingNextCursor()) { <button class="secondary-button load-more" [disabled]="followingBusy()" (click)="loadMoreFollowing()">{{ followingBusy() ? 'Đang tải…' : 'Tải bài cũ hơn' }}</button> }
+            @if (currentUser() && !query().trim() && feedMode() === 'for-you' && forYouNextCursor()) { <button class="secondary-button load-more" [disabled]="forYouBusy()" (click)="loadMoreForYou()">{{ forYouBusy() ? 'Đang tải…' : 'Tải thêm bài viết' }}</button> }
+          </div>
+        </section>
+
+        <aside class="right-column" aria-label="Tài khoản">
+          <section class="side-card account-card">
+            <div class="side-card-heading"><h2>Tài khoản</h2></div>
+            @if (currentUser()) {
+              @for (person of liveProfiles().slice(0, 3); track person.handle) {
+                <div class="suggestion-row">
+                  <span class="avatar avatar-small">{{ person.displayName.slice(0, 1).toLocaleUpperCase('vi') }}</span>
+                  <button class="suggestion-profile" (click)="openProfile(person.handle)"><strong>{{ person.displayName }}</strong><span>{{ '@' + person.handle }}</span></button>
+                  <button class="text-button follow-button" [disabled]="followBusyHandles().has(person.handle)" [attr.aria-pressed]="person.isFollowing" (click)="toggleFollow('@' + person.handle)">{{ person.isFollowing ? 'Đang theo dõi' : 'Theo dõi' }}</button>
+                </div>
+              } @empty { <p class="side-footnote">Tìm tài khoản để bắt đầu theo dõi.</p> }
+            } @else {
+              @for (person of suggestions; track person.handle) {
+                <div class="suggestion-row">
+                  <span class="avatar avatar-small">{{ person.initials }}</span>
+                  <div class="suggestion-copy"><strong>{{ person.name }}</strong><span>{{ person.handle }}</span></div>
+                  <button class="text-button follow-button" [attr.aria-pressed]="followedHandles().has(person.handle)" (click)="toggleFollow(person.handle)">{{ followedHandles().has(person.handle) ? 'Đang theo dõi' : 'Theo dõi' }}</button>
+                </div>
+              }
+            }
+            <button class="text-button all-accounts" (click)="openOwnProfile()">Xem hồ sơ của bạn <ion-icon name="arrow-forward-outline" aria-hidden="true"></ion-icon></button>
+          </section>
+        </aside>
+      </div>
+    }
+
+    @if (page() === 'video') {
+      <section class="standalone-page">
+        <div class="page-heading"><div><p class="eyebrow">KHÁM PHÁ</p><h1><ion-icon name="play-circle-outline" aria-hidden="true"></ion-icon>Video</h1><p>Khám phá video ngắn và xem từng nội dung theo chiều dọc.</p></div></div>
+        @if (!currentUser()) {
+          <div class="video-guest-layout">
+            <div class="video-discovery-empty" aria-label="Chưa có video công khai để phát">
+              <span class="video-discovery-mark"><ion-icon name="play-circle-outline" aria-hidden="true"></ion-icon></span>
+              <strong>Chưa có video để phát</strong>
+              <span>Nội dung công khai sẽ xuất hiện tại đây.</span>
+              <button class="primary-button" (click)="openAuth('login')"><ion-icon name="person-outline" aria-hidden="true"></ion-icon>Đăng nhập để tạo video</button>
+            </div>
+          </div>
+        } @else {
+          <div class="video-create-panel">
+            <div class="video-create-copy"><h2>Tạo video</h2><p>Quay trực tiếp hoặc chọn tệp WebM/MP4, tối đa 60 giây và 60 MB.</p></div>
+            <input #videoFileInput class="visually-hidden" type="file" accept="video/webm,video/mp4" (change)="selectVideoFile($event)">
+            @if (videoRecording()) { <video id="ionic-camera-preview" class="camera-preview" autoplay muted playsinline></video> }
+            @if (videoRecording()) {
+              <button class="primary-button" (click)="stopVideoRecording()"><ion-icon name="stop-circle-outline" aria-hidden="true"></ion-icon>Dừng quay</button>
+            } @else {
+              <button class="primary-button" [disabled]="videoInspecting() || videoPublishing()" (click)="startVideoRecording()"><ion-icon name="videocam-outline" aria-hidden="true"></ion-icon>Quay video</button>
+            }
+            <button class="secondary-button" [disabled]="videoRecording() || videoInspecting() || videoPublishing()" (click)="videoFileInput.click()">Chọn video</button>
+            @if (videoRecording()) { <p class="inline-state" role="status">Đang quay. Video tự dừng sau 60 giây.</p> }
+            @if (videoInspecting()) { <p class="inline-state" role="status">Đang kiểm tra tệp…</p> }
+            @if (videoError()) { <p class="inline-state error-state" role="alert">{{ videoError() }}</p> }
+            @if (videoPreviewUrl()) {
+              <div class="video-upload-preview">
+                <video controls playsinline preload="metadata" [src]="videoPreviewUrl()"></video>
+                <label for="video-caption">Nội dung kèm video</label>
+                <textarea id="video-caption" maxlength="280" placeholder="Viết một dòng về video này" [value]="videoCaption()" (input)="setVideoCaption($event)"></textarea>
+                <div class="video-upload-actions"><button class="text-button" [disabled]="videoPublishing()" (click)="clearVideoSelection()">Bỏ video</button><button class="primary-button" [disabled]="!videoCaption().trim() || videoCaption().length > 280 || videoPublishing()" (click)="uploadVideo()">{{ videoPublishing() ? 'Đang lưu…' : 'Lưu video riêng tư' }}</button></div>
+              </div>
+            }
+          </div>
+          <div class="video-library">
+            <h2>Video của bạn</h2>
+            @if (videoBusy() && !videoItems().length) { <p class="inline-state" role="status">Đang tải video…</p> }
+            @for (video of videoItems(); track video.id) {
+              <article class="video-library-card">
+                <video controls playsinline preload="metadata" [src]="videoPlaybackUrl(video.id)"></video>
+                <div class="video-library-copy"><p>{{ video.caption }}</p><span>{{ video.authorDisplayName }} · {{ conversationTime(video.createdAt) }}</span><small>{{ video.state === 'ready' ? 'Đã xử lý' : 'Riêng tư · chờ quy trình kiểm duyệt trước khi chia sẻ' }}</small></div>
+              </article>
+            }
+            @if (!videoBusy() && !videoError() && !videoItems().length) { <div class="empty-state compact-empty"><h2>Chưa có video</h2><p>Video đã lưu sẽ hiện ở đây.</p></div> }
+          </div>
+        }
+      </section>
+    }
+
+    @if (page() === 'messages') {
+      <section class="standalone-page messages-page">
+        @if (!currentUser()) {
+          <div class="page-heading"><div><p class="eyebrow">KẾT NỐI</p><h1><ion-icon name="chatbubble-outline" aria-hidden="true"></ion-icon>Tin nhắn</h1><p>Đăng nhập để bắt đầu một cuộc trò chuyện riêng tư.</p></div></div>
+          <div class="empty-state compact-empty"><span class="feature-icon"><ion-icon name="chatbubble-outline" aria-hidden="true"></ion-icon></span><h2>Tin nhắn của bạn</h2><p>Lịch sử hội thoại được lưu cùng tài khoản của bạn.</p><button class="primary-button" (click)="openAuth('login')"><ion-icon name="person-outline" aria-hidden="true"></ion-icon>Đăng nhập</button><button class="text-button" (click)="openAuth('register')">Tạo tài khoản</button></div>
+        } @else if (!currentConversation()) {
+          <div class="page-heading"><div><p class="eyebrow">KẾT NỐI</p><h1><ion-icon name="chatbubble-outline" aria-hidden="true"></ion-icon>Tin nhắn</h1><p>Cuộc trò chuyện riêng tư, tách biệt với bảng tin.</p></div></div>
+          @if (conversationsError()) { <p class="inline-state error-state" role="alert">{{ conversationsError() }}</p> }
+          @if (conversationsBusy() && !conversations().length) { <p class="inline-state" role="status">Đang tải tin nhắn…</p> }
+          <div class="conversation-list">
+            @for (conversation of conversations(); track conversation.id) {
+              <button class="conversation-row" (click)="startConversation(conversation.id)">
+                <span class="avatar">{{ conversation.partnerDisplayName.slice(0, 1).toLocaleUpperCase('vi') }}</span>
+                <span class="conversation-copy"><strong>{{ conversation.partnerDisplayName }}</strong><span>{{ conversation.lastMessage || 'Bắt đầu cuộc trò chuyện' }}</span></span>
+                <span class="conversation-time">{{ conversationTime(conversation.updatedAt) }}</span>
+              </button>
+            }
+          </div>
+          @if (!conversationsBusy() && !conversationsError() && !conversations().length) { <div class="empty-state compact-empty"><h2>Chưa có cuộc trò chuyện</h2><p>Mở hồ sơ một tài khoản để bắt đầu nhắn tin.</p></div> }
+          <p class="privacy-note"><ion-icon name="lock-closed-outline" aria-hidden="true"></ion-icon>Tin nhắn riêng không được dùng để xếp hạng nội dung.</p>
+        } @else {
+          <div class="chat-header">
+            <button class="icon-button back-button" aria-label="Quay lại danh sách tin nhắn" (click)="closeConversation()"><ion-icon name="arrow-back-outline"></ion-icon></button>
+            <span class="avatar avatar-small">{{ currentConversation()?.partnerDisplayName?.slice(0, 1)?.toLocaleUpperCase('vi') }}</span>
+            <div><strong>{{ currentConversation()?.partnerDisplayName }}</strong><span>{{ '@' + currentConversation()?.partnerHandle }}</span></div>
+          </div>
+          <div class="chat-messages" aria-live="polite">
+            @if (messagesBusy() && !conversationMessages().length) { <p class="inline-state" role="status">Đang tải cuộc trò chuyện…</p> }
+            @if (messagesError()) { <p class="inline-state error-state" role="alert">{{ messagesError() }}</p> }
+            @if (messageCursor()) { <button class="text-button older-messages" [disabled]="messagesBusy()" (click)="loadOlderMessages()">{{ messagesBusy() ? 'Đang tải…' : 'Tải tin nhắn cũ hơn' }}</button> }
+            @for (message of conversationMessages(); track message.id) {
+              <p class="chat-bubble" [class.mine]="message.senderId === currentUser()?.id">{{ message.body }}</p>
+            }
+          </div>
+          <form class="chat-compose" (submit)="$event.preventDefault(); sendMessage()">
+            <label class="visually-hidden" for="message-input">Nhập tin nhắn</label>
+            <input id="message-input" type="text" maxlength="2000" placeholder="Viết tin nhắn..." [value]="messageText()" (input)="updateMessageText($event)">
+            <button class="send-button" type="submit" aria-label="Gửi tin nhắn" [disabled]="!messageText().trim() || messageSendBusy()"><ion-icon name="send-outline"></ion-icon></button>
+          </form>
+        }
+      </section>
+    }
+
+    @if (page() === 'profile') {
+      <section class="standalone-page profile-page">
+        <div class="page-heading"><div><p class="eyebrow">{{ currentUser() ? 'TÀI KHOẢN' : 'BẢN XEM THỬ' }}</p><h1><ion-icon name="person-outline" aria-hidden="true"></ion-icon>{{ viewedProfile()?.displayName ?? 'Hồ sơ' }}</h1><p>{{ viewedProfile() ? 'Hồ sơ công khai và bài viết.' : (currentUser() ? 'Thông tin và bài viết đã lưu trong tài khoản.' : 'Thông tin và bài viết minh họa của bạn.') }}</p></div>@if (viewedProfile()) { <button class="secondary-button" (click)="openOwnProfile()">Hồ sơ của bạn</button> } @else if (currentUser()) { <button class="secondary-button" (click)="signOut()">Đăng xuất</button> } @else { <button class="secondary-button" (click)="openAuth('login')">Đăng nhập</button> }</div>
+        <div class="profile-card">
+          <span class="avatar profile-avatar">{{ (viewedProfile()?.displayName ?? currentProfile()?.displayName ?? currentUser()?.displayName ?? 'Bạn').slice(0, 1).toLocaleUpperCase('vi') }}</span>
+          <div><h2>{{ viewedProfile()?.displayName ?? currentProfile()?.displayName ?? currentUser()?.displayName ?? 'Bạn' }}</h2><p>{{ viewedProfile() ? '@' + viewedProfile()?.handle : (currentProfile() ? '@' + currentProfile()?.handle : (currentUser() ? '@' + currentUser()?.handle : '@ban')) }}</p><p>{{ viewedProfile()?.bio ?? currentProfile()?.bio ?? (currentUser() ? '' : 'Chia sẻ điều bạn đang học và khám phá ý tưởng mới.') }}</p></div>
+          <div class="profile-stats"><span><ion-icon name="newspaper-outline" aria-hidden="true"></ion-icon><strong>{{ viewedProfile()?.postCount ?? currentProfile()?.postCount ?? ownPosts().length }}</strong> bài viết</span><span><ion-icon name="people-outline" aria-hidden="true"></ion-icon><strong>{{ viewedProfile()?.followerCount ?? currentProfile()?.followerCount ?? 0 }}</strong> người theo dõi</span><span><ion-icon name="person-outline" aria-hidden="true"></ion-icon><strong>{{ viewedProfile()?.followingCount ?? currentProfile()?.followingCount ?? followedHandles().size }}</strong> đang theo dõi</span></div>
+          @if (viewedProfile()) {
+            <div class="profile-actions"><button class="primary-button" [disabled]="followBusyHandles().has(viewedProfile()!.handle)" (click)="toggleFollow('@' + viewedProfile()!.handle)">{{ viewedProfile()?.isFollowing ? 'Đang theo dõi' : 'Theo dõi' }}</button>@if (currentUser()) { <button class="secondary-button" (click)="startConversationWithProfile()">Nhắn tin</button><button class="secondary-button" [disabled]="muteBusyHandles().has(viewedProfile()!.handle)" [attr.aria-pressed]="viewedProfile()?.isMuted" (click)="toggleMuteViewedProfile()">{{ viewedProfile()?.isMuted ? 'Bật lại trong bảng tin' : 'Tắt tiếng trong bảng tin' }}</button> }<button class="secondary-button" (click)="blockViewedProfile()">Chặn tài khoản</button></div>
+          } @else {
+            <button class="primary-button profile-compose" (click)="openComposer()">Tạo bài viết</button>
+          }
+        </div>
+        <div class="profile-posts">
+          <h2>{{ viewedProfile() ? 'Bài viết' : 'Bài viết của bạn' }}</h2>
+          @if (viewedProfile()) {
+            @if (viewedProfileBusy() && !viewedProfilePosts().length) { <p class="inline-state" role="status">Đang tải bài viết…</p> }
+            @if (viewedProfileError()) { <p class="inline-state error-state" role="alert">{{ viewedProfileError() }}</p> }
+            @for (post of viewedProfilePosts(); track post.id) { <article class="post-card own-post"><p>{{ post.text }}</p><span>{{ post.time }}</span></article> }
+            @empty { @if (!viewedProfileBusy()) { <div class="empty-state compact-empty"><h2>Chưa có bài viết</h2><p>Bài viết công khai của tài khoản sẽ hiện ở đây.</p></div> } }
+            @if (viewedProfileNextCursor()) { <button class="secondary-button load-more" [disabled]="viewedProfileBusy()" (click)="loadMoreProfilePosts()">{{ viewedProfileBusy() ? 'Đang tải…' : 'Tải bài cũ hơn' }}</button> }
+          } @else {
+            @for (post of ownPosts(); track post.id) { <article class="post-card own-post"><p>{{ post.text }}</p><span>{{ post.time }} · Đã lưu</span></article> }
+            @empty { <div class="empty-state compact-empty"><h2>Chưa có bài viết</h2><p>{{ currentUser() ? 'Bài viết bạn đăng sẽ xuất hiện ở đây.' : 'Đăng nhập để lưu bài viết vào tài khoản.' }}</p><button class="secondary-button" (click)="openComposer()">{{ currentUser() ? 'Viết bài đầu tiên' : 'Đăng nhập và viết bài' }}</button></div> }
+          }
+        </div>
+        @if (!viewedProfile() && currentUser() && blockedProfiles().length) {
+          <section class="profile-posts blocked-list" aria-labelledby="blocked-title">
+            <h2 id="blocked-title">Tài khoản đã chặn</h2>
+            @for (person of blockedProfiles(); track person.handle) {
+              <div class="suggestion-row">
+                <span class="avatar avatar-small">{{ person.displayName.slice(0, 1).toLocaleUpperCase('vi') }}</span>
+                <div class="suggestion-copy"><strong>{{ person.displayName }}</strong><span>{{ '@' + person.handle }}</span></div>
+                <button class="text-button" (click)="unblockAccount(person.handle)">Bỏ chặn</button>
+              </div>
+            }
+          </section>
+        }
+        @if (!viewedProfile() && currentUser() && mutedProfiles().length) {
+          <section class="profile-posts blocked-list" aria-labelledby="muted-title">
+            <h2 id="muted-title">Tài khoản đã tắt tiếng</h2>
+            @for (person of mutedProfiles(); track person.handle) {
+              <div class="suggestion-row">
+                <span class="avatar avatar-small">{{ person.displayName.slice(0, 1).toLocaleUpperCase('vi') }}</span>
+                <div class="suggestion-copy"><strong>{{ person.displayName }}</strong><span>{{ '@' + person.handle }}</span></div>
+                <button class="text-button" [disabled]="muteBusyHandles().has(person.handle)" (click)="unmuteAccount(person.handle)">Bật lại</button>
+              </div>
+            }
+          </section>
+        }
+      </section>
+    }
+  </main>
+
+  <nav class="mobile-nav" aria-label="Điều hướng chính">
+    <button [class.selected]="page() === 'home'" [attr.aria-current]="page() === 'home' ? 'page' : null" (click)="navigate('home')"><ion-icon name="home-outline"></ion-icon><span>Trang chủ</span></button>
+    <button [class.selected]="page() === 'video'" [attr.aria-current]="page() === 'video' ? 'page' : null" (click)="navigate('video')"><ion-icon name="play-circle-outline"></ion-icon><span>Video</span></button>
+    <button class="mobile-create" aria-label="Tạo bài viết" (click)="openComposer()"><span><ion-icon name="add-outline"></ion-icon></span><small>Tạo</small></button>
+    <button [class.selected]="page() === 'messages'" [attr.aria-current]="page() === 'messages' ? 'page' : null" (click)="navigate('messages')"><ion-icon name="chatbubble-outline"></ion-icon><span>Tin nhắn</span></button>
+    <button [class.selected]="page() === 'profile'" [attr.aria-current]="page() === 'profile' ? 'page' : null" (click)="openOwnProfile()"><ion-icon name="person-outline"></ion-icon><span>Hồ sơ</span></button>
+  </nav>
+
+  <ion-modal cssClass="compose-modal" [isOpen]="composerOpen()" (didDismiss)="closeComposer()" (didPresent)="focusComposeInput()" aria-label="Tạo bài viết">
+    <ng-template>
+      <section class="compose-dialog" aria-labelledby="compose-title">
+        <header><h2 id="compose-title">Tạo bài viết</h2><button class="icon-button" aria-label="Đóng" (click)="closeComposer()"><ion-icon name="close-outline"></ion-icon></button></header>
+        <p class="compose-audience"><ion-icon name="earth-outline" aria-hidden="true"></ion-icon>Công khai · Được lưu vào tài khoản {{ currentUser()?.handle }}</p>
+        <label class="visually-hidden" for="compose-input">Nội dung bài viết</label>
+        <textarea id="compose-input" maxlength="280" placeholder="Bạn đang nghĩ gì?" [value]="composeText()" (input)="updateComposeText($event)"></textarea>
+        <footer><span [class.over-limit]="composeText().length > 280">{{ composeText().length }}/280</span><button class="primary-button" [disabled]="!composeText().trim() || composeText().length > 280 || isSavingPost()" (click)="publishPost()">{{ isSavingPost() ? 'Đang lưu…' : 'Đăng bài' }}</button></footer>
+      </section>
+    </ng-template>
+  </ion-modal>
+
+  <ion-modal cssClass="preferences-modal" [isOpen]="preferencesOpen()" (didDismiss)="preferencesOpen.set(false)" aria-label="Cá nhân hóa bảng tin">
+    <ng-template>
+      <section class="compose-dialog preferences-dialog" aria-labelledby="preferences-title">
+        <header><h2 id="preferences-title">Cá nhân hóa bảng tin</h2><button class="icon-button" aria-label="Đóng" (click)="preferencesOpen.set(false)"><ion-icon name="close-outline"></ion-icon></button></header>
+        <p class="preferences-intro">{{ currentUser() ? 'Tùy chọn được lưu trong tài khoản của bạn.' : 'Trong bản xem thử, tùy chọn chỉ áp dụng trong phiên này.' }}</p>
+        <label class="pause-row"><span><strong>Tạm dừng học từ hành động</strong><small>{{ currentUser() ? 'Thích, lưu và trả lời sẽ không cập nhật hồ sơ học. Lựa chọn xem thêm hoặc ít tương tự vẫn có hiệu lực.' : 'Dừng mô phỏng cập nhật từ lượt thích, lưu và trả lời trong phiên này.' }}</small></span><input type="checkbox" [disabled]="personalizationBusy()" [checked]="personalizationPaused()" (change)="togglePersonalization()"></label>
+        <p class="side-footnote">Đặt lại sẽ xóa các lựa chọn “xem thêm/ít tương tự” và hồ sơ học được; bài đã ẩn vẫn giữ nguyên.</p>
+        <footer><button class="text-button" (click)="resetPreferences()">Đặt lại</button><button class="primary-button" (click)="preferencesOpen.set(false)">Xong</button></footer>
+      </section>
+    </ng-template>
+  </ion-modal>
+
+  <ion-modal cssClass="auth-modal" [isOpen]="authDialogOpen()" (didDismiss)="closeAuth()" aria-label="Tài khoản Ionic">
+    <ng-template>
+      <section class="compose-dialog auth-dialog" aria-labelledby="auth-title">
+        <header><h2 id="auth-title">{{ authMode() === 'register' ? 'Tạo tài khoản' : 'Đăng nhập' }}</h2><button class="icon-button" aria-label="Đóng" (click)="closeAuth()"><ion-icon name="close-outline"></ion-icon></button></header>
+        <p class="preferences-intro">Tài khoản lưu hồ sơ và bài viết của bạn trên máy chủ Ionic.</p>
+        <div class="auth-switch" role="group" aria-label="Chọn thao tác tài khoản">
+          <button type="button" [class.active]="authMode() === 'register'" (click)="setAuthMode('register')">Tạo tài khoản</button>
+          <button type="button" [class.active]="authMode() === 'login'" (click)="setAuthMode('login')">Đăng nhập</button>
+        </div>
+        <form class="auth-form" (submit)="$event.preventDefault(); submitAuth()">
+          @if (authMode() === 'register') {
+            <label for="auth-display-name">Tên hiển thị</label>
+            <input id="auth-display-name" type="text" maxlength="48" autocomplete="name" required [value]="authDisplayName()" (input)="updateAuthDisplayName($event)">
+          }
+          <label for="auth-handle">Tên tài khoản</label>
+          <input id="auth-handle" type="text" minlength="3" maxlength="24" pattern="[A-Za-z0-9_]+" autocomplete="username" autocapitalize="none" required [value]="authHandle()" (input)="updateAuthHandle($event)">
+          <label for="auth-password">Mật khẩu</label>
+          <input id="auth-password" type="password" [attr.minlength]="authMode() === 'register' ? 12 : 1" maxlength="128" [autocomplete]="authMode() === 'register' ? 'new-password' : 'current-password'" required [value]="authPassword()" (input)="updateAuthPassword($event)">
+          @if (authError()) { <p class="auth-error" role="alert">{{ authError() }}</p> }
+          <button class="primary-button auth-submit" type="submit" [disabled]="authBusy()">{{ authBusy() ? 'Đang xử lý…' : (authMode() === 'register' ? 'Tạo tài khoản' : 'Đăng nhập') }}</button>
+        </form>
+      </section>
+    </ng-template>
+  </ion-modal>
+
+  <ion-modal cssClass="auth-modal" [isOpen]="reportDialogOpen()" (didDismiss)="closeReportDialog()" aria-label="Báo cáo bài viết">
+    <ng-template>
+      <section class="compose-dialog auth-dialog" aria-labelledby="report-title">
+        <header><h2 id="report-title">Báo cáo bài viết</h2><button class="icon-button" type="button" aria-label="Đóng" (click)="closeReportDialog()"><ion-icon name="close-outline"></ion-icon></button></header>
+        <p class="preferences-intro">Báo cáo được gửi riêng để xem xét, không ảnh hưởng tùy chọn bảng tin của bạn.</p>
+        <form class="auth-form" (submit)="$event.preventDefault(); submitContentReport()">
+          <label for="report-reason">Lý do</label>
+          <select id="report-reason" required [value]="reportReason()" (change)="updateReportReason($event)">
+            <option value="spam">Spam hoặc lừa đảo</option>
+            <option value="harassment">Quấy rối hoặc bắt nạt</option>
+            <option value="harmful">Nội dung gây hại</option>
+            <option value="impersonation">Mạo danh</option>
+            <option value="other">Lý do khác</option>
+          </select>
+          <label for="report-details">Thông tin thêm <span class="optional-label">(không bắt buộc)</span></label>
+          <textarea id="report-details" maxlength="500" rows="4" placeholder="Mô tả ngắn gọn điều cần xem xét" [value]="reportDetails()" (input)="updateReportDetails($event)"></textarea>
+          @if (reportError()) { <p class="auth-error" role="alert">{{ reportError() }}</p> }
+          <footer><button class="text-button" type="button" [disabled]="reportBusy()" (click)="closeReportDialog()">Hủy</button><button class="primary-button" type="submit" [disabled]="reportBusy()">{{ reportBusy() ? 'Đang gửi…' : 'Gửi báo cáo' }}</button></footer>
+        </form>
+      </section>
+    </ng-template>
+  </ion-modal>
+
+  @if (showToast()) { <div class="toast" role="status" aria-live="polite">{{ showToast() }}</div> }
+</div>
+</ion-app>

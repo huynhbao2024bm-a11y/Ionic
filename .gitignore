@@ -1,0 +1,43 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Dependencies and generated output
+node_modules/
+dist/
+build/
+coverage/
+.data/
+.angular/
+.ionic/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.nx/
+.turbo/
+
+# Local tooling and operating system files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+
+# Flutter platform outputs and local SDK configuration
+android/.gradle/
+android/local.properties
+android/key.properties
+ios/Flutter/.last_build_id
+ios/Flutter/Generated.xcconfig
+ios/Flutter/ephemeral/
+ios/Runner/GeneratedPluginRegistrant.*
+
+# Local test / browser artifacts
+playwright-report/
+test-results/
+*.local

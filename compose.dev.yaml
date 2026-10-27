@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ionic}
+      POSTGRES_USER: ${POSTGRES_USER:-ionic_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ionic_local_only}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - ionic_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ionic_app -d ionic"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  ionic_postgres_data:

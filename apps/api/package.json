@@ -1,0 +1,26 @@
+{
+  "name": "@ionic/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "migrate": "node --env-file-if-exists=.env scripts/migrate.mjs",
+    "evaluate:recommendation": "npm run build && node --env-file-if-exists=.env scripts/evaluate-recommendation.mjs",
+    "inspect:post-search": "node --env-file-if-exists=.env scripts/inspect-post-search-plan.mjs",
+    "start": "node --env-file-if-exists=.env dist/main.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
+    "typescript": "^6.0.0"
+  },
+  "dependencies": {
+    "@nestjs/common": "^12.2.0",
+    "@nestjs/core": "^12.2.0",
+    "@nestjs/platform-express": "^12.2.0",
+    "pg": "^8.23.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  }
+}
