@@ -372,6 +372,14 @@ This log records intentional choices and assumptions. Add a dated entry when a d
 - **Limits:** Keep the Ionic logo colors. Preserve error colors and actionable status contrast; do not turn this into a pure-black theme.
 - **Affected documents:** `UX_UI_SPEC.md`, `PROJECT_ASSESSMENT.md`, and `ROADMAP.md`.
 
+### D-046 — Preserve relevance-tier order during diversity selection
+
+- **Status:** Implemented in the Dart ranker on 2026-10-28 as `ionic-deterministic-v2`; evaluation remains limited to an AI-authored bootstrap set.
+- **Decision:** Apply creator/topic/consecutive-topic diversity passes within each relevance tier in order: direct, strong, adjacent, then fresh. Relax a tier's diversity caps before considering a lower tier. This prevents a fresh item from jumping ahead of a deferred direct match just to break a topic streak.
+- **Reason:** A fixed-pool ranking evaluation surfaced a real ordering inversion in the prior global diversity scan. The documented contract says scores compare candidates within a tier and membership resolves to the strongest tier.
+- **Limits:** The bootstrap judgments are not independent human feedback or representative relevance evidence. No ranking weights were tuned. Validate the behavior on independently reviewed judgments and persisted retrieval data before calling ranking quality established. The NestJS reference remains unchanged pending parity review.
+- **Affected documents:** `RECOMMENDATION_SYSTEM.md`, `ROADMAP.md`, and `PROJECT_ASSESSMENT.md`.
+
 ## Open questions to resolve by feature phase or public launch
 
 Resolve these when their feature phase needs them. They should not block the local recommendation prototype; settle all applicable items before handling production data or opening a public beta.

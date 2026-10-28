@@ -91,7 +91,7 @@ RankerConfig buildRankerConfig(
     rankerVersion:
         env['RECOMMENDATION_RANKER_VERSION']?.trim().isNotEmpty == true
         ? env['RECOMMENDATION_RANKER_VERSION']!.trim()
-        : 'ionic-deterministic-v1',
+        : 'ionic-deterministic-v2',
     taxonomyVersion: taxonomyVersion,
     nowMs: nowMs,
     weights: weights,

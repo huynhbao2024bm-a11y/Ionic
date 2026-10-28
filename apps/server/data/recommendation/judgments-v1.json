@@ -1,0 +1,109 @@
+{
+  "formatVersion": 1,
+  "datasetId": "ionic-text-ranking-judgments-v1",
+  "taxonomyVersion": "ionic-taxonomy-v1",
+  "asOfUtc": "2026-10-27T00:00:00Z",
+  "relevantAtOrAbove": 2,
+  "judgmentProtocol": {
+    "grades": {
+      "0": "Not useful for the scenario",
+      "1": "Weak or indirect usefulness",
+      "2": "Useful and relevant",
+      "3": "Strongly useful for the stated scenario"
+    },
+    "source": "AI-authored hypothetical Vietnamese post text and scenario judgments; no user data, telemetry, or independent human review.",
+    "limitations": "Bootstrap evaluation of reranking within a fixed eligible candidate pool. It does not measure retrieval recall, real-user relevance, label accuracy at scale, or launch quality. Do not tune production weights from this set alone."
+  },
+  "scenarios": [
+    {
+      "id": "cold-start-variety",
+      "description": "New viewer with no profile history; fresh, broadly useful writing should lead without a survey.",
+      "limit": 5,
+      "profile": {},
+      "candidates": [
+        { "id": "cold-writing-guide", "creatorId": "creator-a", "ageHours": 0.5, "text": "Cách viết một bài hướng dẫn có ví dụ ngắn và thứ tự dễ theo dõi.", "grade": 3 },
+        { "id": "cold-learning-habit", "creatorId": "creator-b", "ageHours": 2, "text": "Một bài học nhỏ mỗi ngày giúp việc học tập bền hơn thế nào.", "grade": 3 },
+        { "id": "cold-interface-review", "creatorId": "creator-c", "ageHours": 4, "text": "Đánh giá giao diện bằng các bước kiểm tra trải nghiệm người dùng.", "grade": 2 },
+        { "id": "cold-creative-method", "creatorId": "creator-d", "ageHours": 8, "text": "Một ý tưởng sáng tạo được phát triển thành quy trình làm việc.", "grade": 2 },
+        { "id": "cold-product-plan", "creatorId": "creator-e", "ageHours": 14, "text": "Cách lập roadmap sản phẩm từ vấn đề thật của người dùng.", "grade": 2 },
+        { "id": "cold-code-detail", "creatorId": "creator-f", "ageHours": 30, "text": "Một chi tiết mã nguồn TypeScript ít gặp trong ứng dụng.", "grade": 1 },
+        { "id": "cold-old-interface", "creatorId": "creator-g", "ageHours": 168, "text": "Một ghi chú cũ về giao diện, không có ví dụ hay cách làm.", "grade": 0 }
+      ]
+    },
+    {
+      "id": "known-design-interest",
+      "description": "Explicit design interest should rank direct design content above fresh fallback content.",
+      "limit": 6,
+      "profile": { "explicitInterests": [{ "dimension": "topic", "labelId": "topic.design" }] },
+      "candidates": [
+        { "id": "design-accessibility", "creatorId": "creator-h", "ageHours": 3, "text": "Checklist thiết kế giao diện dễ tiếp cận, kèm ví dụ thực tế.", "grade": 3 },
+        { "id": "design-research", "creatorId": "creator-i", "ageHours": 18, "text": "Cách tổng hợp phỏng vấn để cải thiện trải nghiệm người dùng.", "grade": 3 },
+        { "id": "design-product", "creatorId": "creator-j", "ageHours": 2, "text": "Một quyết định sản phẩm được kiểm tra với người dùng trước khi phát hành.", "grade": 1 },
+        { "id": "design-creativity", "creatorId": "creator-k", "ageHours": 5, "text": "Bài tập sáng tạo giúp mở rộng ý tưởng cho nhóm.", "grade": 1 },
+        { "id": "design-software", "creatorId": "creator-l", "ageHours": 1, "text": "Cách tổ chức mã nguồn Angular cho nhóm nhỏ.", "grade": 1 },
+        { "id": "design-unrelated", "creatorId": "creator-m", "ageHours": 0.2, "text": "Một ghi chép về nội dung nấu ăn cuối tuần.", "grade": 0 }
+      ]
+    },
+    {
+      "id": "learned-software-interest",
+      "description": "A recent, confident like/save-derived software feature should support direct and adjacent discovery.",
+      "limit": 6,
+      "profile": {
+        "preferences": [{ "dimension": "topic", "labelId": "topic.software", "sourceSummary": ["like", "save"], "score": 0.82, "confidence": 0.9, "updatedHoursAgo": 2, "expiresInDays": 30 }]
+      },
+      "candidates": [
+        { "id": "software-api-guide", "creatorId": "creator-n", "ageHours": 4, "text": "Hướng dẫn thiết kế API có kiểm tra đầu vào và lỗi nhất quán.", "grade": 3 },
+        { "id": "software-state", "creatorId": "creator-o", "ageHours": 20, "text": "Một bài viết về quản lý trạng thái trong ứng dụng Angular.", "grade": 3 },
+        { "id": "software-product", "creatorId": "creator-p", "ageHours": 1, "text": "Cách chọn tính năng sản phẩm dựa trên vấn đề người dùng.", "grade": 2 },
+        { "id": "software-learning", "creatorId": "creator-q", "ageHours": 6, "text": "Bài học nhập môn về cách học tập theo dự án nhỏ.", "grade": 2 },
+        { "id": "software-writing", "creatorId": "creator-r", "ageHours": 0.5, "text": "Cách viết một câu chuyện ngắn có mở đầu rõ ràng.", "grade": 0 },
+        { "id": "software-creativity", "creatorId": "creator-s", "ageHours": 3, "text": "Một ý tưởng sáng tạo cho hoạt động cuối tuần.", "grade": 0 }
+      ]
+    },
+    {
+      "id": "negative-feedback-is-not-hide",
+      "description": "Less-like feedback should reduce writing matches but should not silently remove them.",
+      "limit": 5,
+      "profile": {
+        "explicitInterests": [{ "dimension": "topic", "labelId": "topic.design" }],
+        "lessLikeLabels": [{ "dimension": "topic", "labelId": "topic.writing" }]
+      },
+      "candidates": [
+        { "id": "negative-direct-design", "creatorId": "creator-t", "ageHours": 6, "text": "Một phương pháp thiết kế giao diện cho luồng đăng ký.", "grade": 3 },
+        { "id": "negative-adjacent-product", "creatorId": "creator-u", "ageHours": 5, "text": "Roadmap sản phẩm được ưu tiên theo nhu cầu người dùng.", "grade": 2 },
+        { "id": "negative-adjacent-creative", "creatorId": "creator-v", "ageHours": 8, "text": "Quy trình sáng tạo nhiều phương án trước khi chọn thiết kế.", "grade": 2 },
+        { "id": "negative-writing", "creatorId": "creator-w", "ageHours": 1, "text": "Một bài viết về cách viết nội dung hằng ngày.", "grade": 0 },
+        { "id": "negative-fresh-learning", "creatorId": "creator-x", "ageHours": 0.3, "text": "Kiến thức nhập môn về học tập qua dự án nhỏ.", "grade": 1 }
+      ]
+    },
+    {
+      "id": "creator-topic-diversity",
+      "description": "When candidates are similarly fresh, creator and topic caps should retain useful alternatives.",
+      "limit": 5,
+      "rankerConfig": { "maxPerCreator": 1, "maxPerTopic": 1, "maxConsecutiveTopic": 1 },
+      "profile": {},
+      "candidates": [
+        { "id": "diversity-01-design", "creatorId": "creator-y", "ageHours": 1, "text": "Thiết kế giao diện với cấu trúc rõ ràng.", "grade": 2 },
+        { "id": "diversity-02-design", "creatorId": "creator-z", "ageHours": 1, "text": "Một ghi chú khác về trải nghiệm người dùng.", "grade": 2 },
+        { "id": "diversity-03-learning", "creatorId": "creator-aa", "ageHours": 1, "text": "Bài học mới về cách học kỹ năng theo từng bước.", "grade": 2 },
+        { "id": "diversity-04-product", "creatorId": "creator-y", "ageHours": 1, "text": "Một quyết định sản phẩm và nhu cầu người dùng.", "grade": 2 },
+        { "id": "diversity-05-writing", "creatorId": "creator-ab", "ageHours": 1, "text": "Cách viết nội dung súc tích cho người mới.", "grade": 2 },
+        { "id": "diversity-06-creativity", "creatorId": "creator-ac", "ageHours": 1, "text": "Một ý tưởng sáng tạo cho buổi làm việc nhóm.", "grade": 2 },
+        { "id": "diversity-07-software", "creatorId": "creator-ad", "ageHours": 1, "text": "Mã nguồn phần mềm được chia thành các phần nhỏ.", "grade": 2 }
+      ]
+    },
+    {
+      "id": "freshness-within-direct-match",
+      "description": "Among equally relevant direct matches, fresher posts should appear before stale ones.",
+      "limit": 4,
+      "profile": { "explicitInterests": [{ "dimension": "topic", "labelId": "topic.design" }] },
+      "candidates": [
+        { "id": "fresh-design-a", "creatorId": "creator-ae", "ageHours": 1, "text": "Mẹo thiết kế giao diện cho trang hồ sơ.", "grade": 3 },
+        { "id": "fresh-design-b", "creatorId": "creator-af", "ageHours": 12, "text": "Phân tích trải nghiệm người dùng khi tìm kiếm.", "grade": 3 },
+        { "id": "fresh-design-c", "creatorId": "creator-ag", "ageHours": 48, "text": "Một quy trình thiết kế giao diện đã dùng tháng trước.", "grade": 2 },
+        { "id": "fresh-design-d", "creatorId": "creator-ah", "ageHours": 240, "text": "Ghi chú cũ về thiết kế giao diện.", "grade": 1 },
+        { "id": "fresh-product", "creatorId": "creator-ai", "ageHours": 0.2, "text": "Một cập nhật sản phẩm mới cho người dùng.", "grade": 1 }
+      ]
+    }
+  ]
+}

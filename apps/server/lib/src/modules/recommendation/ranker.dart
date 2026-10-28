@@ -602,7 +602,6 @@ List<RankedCandidate> _diversify(
   RankerConfig config,
 ) {
   var selected = <RankedCandidate>[];
-  var remaining = [...ranked];
   final capPasses = [
     _DiversityCaps(
       config.maxPerCreator,
@@ -617,11 +616,17 @@ List<RankedCandidate> _diversify(
     _DiversityCaps(0x7fffffff, 0x7fffffff, config.maxConsecutiveTopic),
     _DiversityCaps(0x7fffffff, 0x7fffffff, 0x7fffffff),
   ];
-  for (final caps in capPasses) {
+  // Relevance tiers are strict priorities. Diversity may defer an item within
+  // its tier, but must not let a lower-tier candidate jump ahead of it.
+  for (final tier in RelevanceTier.values) {
     if (selected.length >= limit) break;
-    final result = _selectWithCaps(remaining, limit, caps, selected);
-    selected = result.selected;
-    remaining = result.deferred;
+    var remaining = ranked.where((item) => item.tier == tier).toList();
+    for (final caps in capPasses) {
+      if (selected.length >= limit || remaining.isEmpty) break;
+      final result = _selectWithCaps(remaining, limit, caps, selected);
+      selected = result.selected;
+      remaining = result.deferred;
+    }
   }
   return selected.take(limit).toList();
 }
