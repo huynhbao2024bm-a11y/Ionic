@@ -2,6 +2,7 @@ import 'content_labeler.dart';
 import 'types.dart';
 
 /// Versioned starter vocabulary for neutral topics; not a sensitive-trait classifier.
+const textLabelRulesVersion = 'ionic-text-rules-v2';
 const textLabelRules = <KeywordRule>[
   KeywordRule(
     dimension: LabelDimension.topic,
@@ -69,6 +70,111 @@ const textLabelRules = <KeywordRule>[
     labelId: 'context.howto',
     terms: ['hướng dẫn', 'mẹo', 'cách làm', 'tutorial', 'how to'],
     confidence: 0.78,
+  ),
+  KeywordRule(
+    dimension: LabelDimension.topic,
+    labelId: 'topic.music',
+    terms: ['âm nhạc', 'music', 'guitar', 'piano', 'sáng tác nhạc', 'bài hát'],
+    confidence: 0.76,
+  ),
+  KeywordRule(
+    dimension: LabelDimension.topic,
+    labelId: 'topic.food',
+    terms: [
+      'nấu ăn',
+      'ẩm thực',
+      'công thức nấu',
+      'cooking',
+      'recipe',
+      'món ăn',
+    ],
+    confidence: 0.76,
+  ),
+  KeywordRule(
+    dimension: LabelDimension.topic,
+    labelId: 'topic.travel',
+    terms: ['du lịch', 'travel', 'hành trình khám phá', 'phượt', 'itinerary'],
+    confidence: 0.76,
+  ),
+  KeywordRule(
+    dimension: LabelDimension.topic,
+    labelId: 'topic.gaming',
+    terms: ['trò chơi điện tử', 'video game', 'gaming', 'gameplay', 'esports'],
+    confidence: 0.76,
+  ),
+  KeywordRule(
+    dimension: LabelDimension.topic,
+    labelId: 'topic.photography',
+    terms: ['nhiếp ảnh', 'photography', 'chụp ảnh', 'ống kính', 'khẩu độ'],
+    confidence: 0.76,
+  ),
+  KeywordRule(
+    dimension: LabelDimension.topic,
+    labelId: 'topic.film',
+    terms: ['điện ảnh', 'phim ảnh', 'cinema', 'filmmaking', 'kịch bản phim'],
+    confidence: 0.76,
+  ),
+  KeywordRule(
+    dimension: LabelDimension.topic,
+    labelId: 'topic.books',
+    terms: [
+      'đọc sách',
+      'tiểu thuyết',
+      'book review',
+      'văn học',
+      'tác giả sách',
+    ],
+    confidence: 0.76,
+  ),
+  KeywordRule(
+    dimension: LabelDimension.topic,
+    labelId: 'topic.sports',
+    terms: ['thể thao', 'bóng đá', 'bóng rổ', 'cầu lông', 'tennis', 'sports'],
+    confidence: 0.76,
+  ),
+  KeywordRule(
+    dimension: LabelDimension.topic,
+    labelId: 'topic.nature',
+    terms: [
+      'thiên nhiên',
+      'động vật hoang dã',
+      'botany',
+      'wildlife',
+      'thực vật học',
+    ],
+    confidence: 0.76,
+  ),
+  KeywordRule(
+    dimension: LabelDimension.topic,
+    labelId: 'topic.science',
+    terms: [
+      'khoa học',
+      'thiên văn',
+      'vật lý',
+      'science',
+      'astronomy',
+      'thí nghiệm',
+    ],
+    confidence: 0.76,
+  ),
+  KeywordRule(
+    dimension: LabelDimension.topic,
+    labelId: 'topic.crafts',
+    terms: ['thủ công', 'đan len', 'gốm', 'origami', 'handmade', 'woodworking'],
+    confidence: 0.76,
+  ),
+  KeywordRule(
+    dimension: LabelDimension.topic,
+    labelId: 'topic.pets',
+    terms: [
+      'thú cưng',
+      'mèo cưng',
+      'chó cưng',
+      'pet care',
+      'nuôi mèo',
+      'nuôi chó',
+    ],
+    confidence: 0.76,
   ),
   KeywordRule(
     dimension: LabelDimension.language,

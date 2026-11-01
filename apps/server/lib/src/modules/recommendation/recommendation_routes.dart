@@ -14,9 +14,38 @@ Handler createRecommendationRoutes(DatabaseService database) {
   final recommendation = RecommendationService(database);
   final router = Router()
     ..get(
+      '/hidden',
+      (Request request) async => _json(
+        200,
+        await recommendation.hidden(
+          (await requireAuthenticatedUser(request, auth)).id,
+        ),
+      ),
+    )
+    ..delete(
+      '/<contentId>/hide',
+      (Request request, String contentId) async => _json(
+        200,
+        await recommendation.unhide(
+          (await requireAuthenticatedUser(request, auth)).id,
+          contentId,
+        ),
+      ),
+    )
+    ..get(
       '/for-you',
       (Request request) => _forYou(request, auth, recommendation),
     )
+    ..post('/attention', (Request request) async {
+      final user = await requireAuthenticatedUser(request, auth);
+      return _json(
+        200,
+        await recommendation.recordAttention(
+          user.id,
+          await readJsonObject(request),
+        ),
+      );
+    })
     ..get(
       '/settings',
       (Request request) => _settings(request, auth, recommendation),
@@ -140,5 +169,8 @@ Future<Response> _recordVideoSignal(
 Response _json(int statusCode, Object value) => Response(
   statusCode,
   body: jsonEncode(value),
-  headers: const {'content-type': 'application/json; charset=utf-8'},
+  headers: const {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+  },
 );

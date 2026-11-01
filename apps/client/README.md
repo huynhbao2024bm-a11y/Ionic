@@ -1,8 +1,12 @@
 # Ionic Flutter client
 
+The v8 client measures only qualified foreground signed-in Home attention in RAM and sends opaque receipt/coarse-band batches; background, other routes and account switches interrupt collection. Settings supports pause/reset and explains the confirmed 7/30-day limits; no labels/reasons/scores are displayed. Fifteen focused tests, a narrow native timer/geometry check, Android debug and release Web builds are recorded in [the dated assessment](../../docs/PROJECT_ASSESSMENT.md). Native integration tests use a synthetic callback/injected lifecycle and do not establish a complete physical-phone or live-learning journey. The current debug APK targets the emulator bridge, not a public API.
+
 The product client is Flutter. It calls the `/api/v1` contract for account authorization, PostgreSQL persistence, and server-side recommendation ranking. The first release is text-first with optional photo and voice attachments; short video is deferred. The local web proxy defaults to the target Dart server on port 3001 so current Flutter features use the same backend contract. Set `IONIC_API_PORT=3000` to inspect the NestJS reference while route parity is being completed. Keep the Angular app as a rollback/reference until signed-in flows pass through Flutter and the Dart API.
 
 ## Local development
+
+Current Dart account/media/message verification is documented in `../../docs/VERIFY_ACCOUNT_MEDIA_MESSAGES.md`. Apply migration 0013 before using the new privacy, session, recovery and read-state APIs. The latest normal debug APK targets `http://10.0.2.2:3001/api/v1` for an emulator. Native plugin verification produces a test APK, so rebuild `lib/main.dart` normally before handing an APK to the owner.
 
 1. Install Flutter and its bundled Dart SDK, then confirm `flutter --version` works in the terminal that will run the app.
 2. Start PostgreSQL with `docker compose -f compose.dev.yaml up -d db` from the project root.

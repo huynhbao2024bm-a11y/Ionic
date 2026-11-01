@@ -1,7 +1,7 @@
 import 'dart:io';
 
-import 'package:crypto/crypto.dart';
 import 'package:postgres/postgres.dart';
+import 'package:ionic_server/src/modules/database/migration_checksum.dart';
 
 Future<void> main() async {
   final connectionString = Platform.environment['DATABASE_URL']?.trim();
@@ -60,15 +60,15 @@ Future<void> main() async {
 
       for (final file in files) {
         final name = file.uri.pathSegments.last;
-        final sql = await file.readAsString();
-        final checksum = sha256.convert(await file.readAsBytes()).toString();
+        final sql = canonicalMigrationSql(await file.readAsString());
+        final checksum = migrationChecksum(sql);
         final existing = await transaction.execute(
           r'SELECT checksum FROM schema_migration WHERE version = $1',
           parameters: [name],
         );
         if (existing.isNotEmpty) {
           final savedChecksum = existing.first.toColumnMap()['checksum'];
-          if (savedChecksum != checksum) {
+          if (!matchesMigrationChecksum(sql, '$savedChecksum')) {
             throw StateError(
               'Applied migration $name was modified; create a new migration instead.',
             );

@@ -13,6 +13,8 @@ import 'package:pointycastle/key_derivators/api.dart';
 import 'package:pointycastle/key_derivators/scrypt.dart';
 import 'package:postgres/postgres.dart';
 
+part 'account_operations.dart';
+
 const _sessionLifetime = Duration(days: 30);
 const _passwordSaltLength = 16;
 const _passwordHashLength = 64;
@@ -262,11 +264,22 @@ class AuthService {
 
     final token = _randomToken();
     final expiresAt = DateTime.now().toUtc().add(_sessionLifetime);
-    await _database.query(
-      'INSERT INTO user_session (token_hash, user_id, expires_at) '
-      r'VALUES ($1, $2, $3) ON CONFLICT (token_hash) DO NOTHING',
-      parameters: [_sessionDigest(token), account['id'], expiresAt],
-    );
+    await _database.transaction((tx) async {
+      // Serialize with password/recovery/deletion operations; a password verified
+      // before a concurrent change must not mint a new valid session afterwards.
+      final current = await tx.execute(
+        r"SELECT password_hash FROM app_user WHERE id = $1 AND state = 'active' FOR UPDATE",
+        parameters: [account['id']],
+      );
+      if (current.isEmpty ||
+          !_constantTimeEquals(current.first.first as List<int>, expected)) {
+        throw const ApiException(401, 'Handle or password is incorrect.');
+      }
+      await tx.execute(
+        r'INSERT INTO user_session(token_hash, user_id, expires_at) VALUES ($1, $2, $3)',
+        parameters: [_sessionDigest(token), account['id'], expiresAt],
+      );
+    });
     return AuthResult(user: _toPublicUser(account), token: token);
   }
 

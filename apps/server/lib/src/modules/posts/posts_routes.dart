@@ -16,6 +16,38 @@ Handler createPostsRoutes(DatabaseService database) {
     ..post('/', (Request request) => _create(request, auth, posts))
     ..get('/public', (Request request) => _public(request, posts))
     ..get('/mine', (Request request) => _mine(request, auth, posts))
+    ..get(
+      '/saved',
+      (Request request) async => _json(
+        200,
+        await posts.listSaved(
+          (await requireAuthenticatedUser(request, auth)).id,
+          _limit(request),
+          request.url.queryParameters['cursor'],
+        ),
+      ),
+    )
+    ..patch(
+      '/<contentId>',
+      (Request request, String contentId) async => _json(
+        200,
+        await posts.editOwn(
+          (await requireAuthenticatedUser(request, auth)).id,
+          contentId,
+          await readJsonObject(request),
+        ),
+      ),
+    )
+    ..delete(
+      '/<contentId>',
+      (Request request, String contentId) async => _json(
+        200,
+        await posts.deleteOwn(
+          (await requireAuthenticatedUser(request, auth)).id,
+          contentId,
+        ),
+      ),
+    )
     ..get('/following', (Request request) => _following(request, auth, posts))
     ..get('/search', (Request request) => _search(request, auth, posts))
     ..get(

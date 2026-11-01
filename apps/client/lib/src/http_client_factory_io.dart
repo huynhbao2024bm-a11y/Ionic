@@ -5,7 +5,10 @@ const _sessionCookieName = 'ionic_session';
 const _sessionStorageKey = 'ionic_session_token';
 final _validSessionToken = RegExp(r'^[A-Za-z0-9_-]{40,50}$');
 
-http.Client createHttpClient() => _SecureSessionClient();
+http.Client createHttpClient({
+  FlutterSecureStorage? storage,
+  http.Client? innerClient,
+}) => _SecureSessionClient(storage: storage, innerClient: innerClient);
 
 class _SecureSessionClient extends http.BaseClient {
   _SecureSessionClient({
@@ -37,11 +40,13 @@ class _SecureSessionClient extends http.BaseClient {
     }
 
     final response = await _innerClient.send(request);
-    await _persistSessionCookie(response.headers['set-cookie']);
+    await _persistSessionCookie(response.headers['set-cookie'], token);
     if (response.statusCode == 401 &&
         token != null &&
         !_isCredentialAttempt(request.url)) {
-      await _storage.delete(key: _sessionStorageKey);
+      if (await _storage.read(key: _sessionStorageKey) == token) {
+        await _storage.delete(key: _sessionStorageKey);
+      }
     }
     return response;
   }
@@ -54,7 +59,10 @@ class _SecureSessionClient extends http.BaseClient {
     caseSensitive: false,
   ).hasMatch(header);
 
-  Future<void> _persistSessionCookie(String? header) async {
+  Future<void> _persistSessionCookie(
+    String? header,
+    String? previousToken,
+  ) async {
     if (header == null) return;
     final match = RegExp(
       '(?:^|,\\s*)${RegExp.escape(_sessionCookieName)}=([^;,\\s]*)',
@@ -67,7 +75,9 @@ class _SecureSessionClient extends http.BaseClient {
       caseSensitive: false,
     ).firstMatch(header)?.group(1);
     if (token.isEmpty || (maxAge != null && (int.tryParse(maxAge) ?? 0) <= 0)) {
-      await _storage.delete(key: _sessionStorageKey);
+      if (await _storage.read(key: _sessionStorageKey) == previousToken) {
+        await _storage.delete(key: _sessionStorageKey);
+      }
       return;
     }
     if (_validSessionToken.hasMatch(token)) {

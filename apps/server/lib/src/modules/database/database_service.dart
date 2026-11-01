@@ -17,6 +17,11 @@ const _requiredMigrations = <String>[
   '0010_video_recommendation_signals.sql',
   '0011_video_signal_lookup_index.sql',
   '0012_image_voice_attachments.sql',
+  '0013_account_controls_and_message_reads.sql',
+  '0014_semantic_and_reversible_evidence.sql',
+  '0015_normalized_semantic_vectors.sql',
+  '0016_adaptive_recommendation.sql',
+  '0017_adaptive_cascade_invalidation.sql',
 ];
 
 class DatabaseService {
@@ -59,7 +64,7 @@ class DatabaseService {
 
     try {
       final migrationTable = await configured.execute(
-        "SELECT to_regclass('public.schema_migration')::text",
+        "SELECT to_regclass('schema_migration')::text",
       );
       if (migrationTable.isEmpty || migrationTable.first.first == null) {
         return DatabaseReadiness.schemaPending;

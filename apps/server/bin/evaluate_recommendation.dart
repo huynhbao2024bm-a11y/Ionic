@@ -123,6 +123,8 @@ Map<String, String> _rankerEnvironment(Map<String, dynamic> raw) {
     'maxPerCreator': 'RECOMMENDATION_MAX_PER_CREATOR',
     'maxPerTopic': 'RECOMMENDATION_MAX_PER_TOPIC',
     'maxConsecutiveTopic': 'RECOMMENDATION_MAX_CONSECUTIVE_TOPIC',
+    'nonDiscriminativeLabelPrevalenceThreshold':
+        'RECOMMENDATION_NON_DISCRIMINATIVE_LABEL_PREVALENCE_THRESHOLD',
   };
   final environment = <String, String>{};
   for (final entry in environmentKeys.entries) {
@@ -230,6 +232,22 @@ Future<void> main(List<String> args) async {
       config,
       limit,
     );
+    final expectedTopContentIds = _strings(
+      scenario['expectedTopContentIds'],
+      'expectedTopContentIds',
+    );
+    if (expectedTopContentIds.length > ranked.length) {
+      throw StateError(
+        'Scenario "${scenario['id']}" returned fewer items than its expected-order check.',
+      );
+    }
+    for (var index = 0; index < expectedTopContentIds.length; index++) {
+      if (ranked[index].candidate.id != expectedTopContentIds[index]) {
+        throw StateError(
+          'Scenario "${scenario['id']}" expected "${expectedTopContentIds[index]}" at position ${index + 1}, received "${ranked[index].candidate.id}".',
+        );
+      }
+    }
     final metrics = evaluateRanking(
       RankingEvaluationInput(
         ranked: ranked,
@@ -252,6 +270,7 @@ Future<void> main(List<String> args) async {
           .take(limit)
           .map((item) => item.tier.name)
           .toList(growable: false),
+      if (expectedTopContentIds.isNotEmpty) 'expectedOrderVerified': true,
       'metrics': {
         'precisionAtK': metrics.precisionAtK,
         'recallAtK': metrics.recallAtK,

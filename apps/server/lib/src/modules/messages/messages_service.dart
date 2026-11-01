@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:ionic_server/src/http/api_exception.dart';
 import 'package:ionic_server/src/modules/database/database_service.dart';
 import 'package:unorm_dart/unorm_dart.dart' as unorm;
+import 'package:postgres/postgres.dart';
 
 final _uuidPattern = RegExp(
   r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
@@ -31,12 +32,17 @@ class MessagesService {
                 partner.handle,
                 p.display_name,
                 COALESCE(latest.body, '') AS body,
+                (SELECT count(*)::int FROM direct_message unread
+                 WHERE unread.conversation_id = c.id AND unread.sender_id <> $1
+                   AND (read_state.last_read_at IS NULL OR
+                     (unread.created_at, unread.id) > (read_state.last_read_at, read_state.last_read_message_id))) AS unread_count,
                 COALESCE(c.last_message_at, c.created_at) AS updated_at
          FROM direct_conversation c
          JOIN app_user partner ON partner.id = CASE
            WHEN c.participant_low = $1 THEN c.participant_high
            ELSE c.participant_low END
          JOIN user_profile p ON p.user_id = partner.id
+         LEFT JOIN direct_conversation_read read_state ON read_state.conversation_id = c.id AND read_state.user_id = $1
          LEFT JOIN LATERAL (
            SELECT m.body FROM direct_message m
            WHERE m.conversation_id = c.id
@@ -62,6 +68,7 @@ class MessagesService {
           'partnerHandle': '${value['handle']}',
           'partnerDisplayName': '${value['display_name']}',
           'lastMessage': '${value['body']}',
+          'unreadCount': value['unread_count'],
           'updatedAt': _dateTime(value['updated_at']).toUtc().toIso8601String(),
         };
       }).toList(),
@@ -91,8 +98,10 @@ class MessagesService {
       throw const ApiException(400, 'You cannot message your own account.');
     }
     final ids = [viewerId, targetId]..sort();
-    final result = await _database.query(
-      r'''INSERT INTO direct_conversation(id, participant_low, participant_high)
+    final result = await _database.transaction((tx) async {
+      await _lockAndCheckRecipient(tx, viewerId, targetId);
+      return tx.execute(
+        r'''INSERT INTO direct_conversation(id, participant_low, participant_high)
           SELECT $1, $2, $3
           WHERE NOT EXISTS (
             SELECT 1 FROM account_block WHERE
@@ -102,8 +111,9 @@ class MessagesService {
           ON CONFLICT (participant_low, participant_high)
           DO UPDATE SET participant_low = EXCLUDED.participant_low
           RETURNING id, created_at, last_message_at''',
-      parameters: [_randomUuid(), ids[0], ids[1]],
-    );
+        parameters: [_randomUuid(), ids[0], ids[1]],
+      );
+    });
     if (result.isEmpty) {
       throw const ApiException(
         403,
@@ -133,10 +143,13 @@ class MessagesService {
   ) async {
     final conversationId = _parseUuid(conversationInput, 'Conversation ID');
     final cursor = _parseCursor(cursorInput);
+    await _requireConversation(viewerId, conversationId);
     final result = await _database.query(
       r'''SELECT m.id, m.sender_id, m.body, m.created_at
          FROM direct_message m
          JOIN direct_conversation c ON c.id = m.conversation_id
+         JOIN app_user low_user ON low_user.id = c.participant_low AND low_user.state = 'active'
+         JOIN app_user high_user ON high_user.id = c.participant_high AND high_user.state = 'active'
          WHERE m.conversation_id = $1
            AND ($2 = c.participant_low OR $2 = c.participant_high)
            AND NOT EXISTS (
@@ -174,7 +187,25 @@ class MessagesService {
             ),
           )
         : null;
-    return {'items': items, 'nextCursor': nextCursor};
+    final partnerRead = await _database.query(
+      r'''SELECT r.last_read_at, r.last_read_message_id
+      FROM direct_conversation_read r JOIN direct_conversation c ON c.id = r.conversation_id
+      WHERE r.conversation_id = $1 AND r.user_id <> $2 AND ($2 = c.participant_low OR $2 = c.participant_high)
+        AND NOT EXISTS (SELECT 1 FROM account_block b
+          WHERE (b.blocker_id = c.participant_low AND b.blocked_id = c.participant_high)
+             OR (b.blocker_id = c.participant_high AND b.blocked_id = c.participant_low))''',
+      parameters: [conversationId, viewerId],
+    );
+    return {
+      'items': items,
+      'nextCursor': nextCursor,
+      'partnerReadAt': partnerRead.isEmpty
+          ? null
+          : _dateTime(partnerRead.first[0]).toUtc().toIso8601String(),
+      'partnerReadMessageId': partnerRead.isEmpty
+          ? null
+          : '${partnerRead.first[1]}',
+    };
   }
 
   Future<Map<String, Object?>> sendMessage(
@@ -185,6 +216,19 @@ class MessagesService {
     final conversationId = _parseUuid(conversationInput, 'Conversation ID');
     final parsed = _parseBody(input);
     return _database.transaction((transaction) async {
+      final conversation = await transaction.execute(
+        r'''SELECT participant_low, participant_high
+        FROM direct_conversation WHERE id = $1 AND ($2 = participant_low OR $2 = participant_high)''',
+        parameters: [conversationId, viewerId],
+      );
+      if (conversation.isEmpty) {
+        throw const ApiException(404, 'Conversation was not found.');
+      }
+      final partnerId = '${conversation.first[0]}' == viewerId
+          ? '${conversation.first[1]}'
+          : '${conversation.first[0]}';
+      // Use the same ordered account locks as block/privacy changes.
+      await _lockAndCheckRecipient(transaction, viewerId, partnerId);
       final access = await transaction.execute(
         r'''SELECT CASE WHEN participant_low = $2 THEN participant_high
                         ELSE participant_low END AS partner_id
@@ -238,6 +282,82 @@ class MessagesService {
         'createdAt': _dateTime(message['created_at']).toUtc().toIso8601String(),
       };
     });
+  }
+
+  Future<void> _lockAndCheckRecipient(
+    TxSession tx,
+    String viewerId,
+    String recipientId,
+  ) async {
+    final ids = [viewerId, recipientId]..sort();
+    final accounts = await tx.execute(
+      r"SELECT id FROM app_user WHERE id = ANY($1::uuid[]) AND state = 'active' ORDER BY id FOR UPDATE",
+      parameters: [ids],
+    );
+    if (accounts.length != 2) {
+      throw const ApiException(404, 'Account was not found.');
+    }
+    final allowed = await tx.execute(
+      r'''SELECT 1 FROM app_user recipient
+      LEFT JOIN account_setting s ON s.user_id = recipient.id
+      WHERE recipient.id = $2
+        AND NOT EXISTS (SELECT 1 FROM account_block b
+          WHERE (b.blocker_id = $1 AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = $1))
+        AND (COALESCE(s.message_permission, 'everyone') = 'everyone'
+          OR (s.message_permission = 'following' AND EXISTS (
+            SELECT 1 FROM account_follow f WHERE f.follower_id = $2 AND f.followed_id = $1)))''',
+      parameters: [viewerId, recipientId],
+    );
+    if (allowed.isEmpty) {
+      throw const ApiException(403, 'Recipient does not allow this message.');
+    }
+  }
+
+  Future<void> _requireConversation(
+    String viewerId,
+    String conversationId,
+  ) async {
+    final access = await _database.query(
+      r'''SELECT c.id FROM direct_conversation c
+      JOIN app_user low_user ON low_user.id = c.participant_low AND low_user.state = 'active'
+      JOIN app_user high_user ON high_user.id = c.participant_high AND high_user.state = 'active'
+      WHERE c.id = $1 AND ($2 = c.participant_low OR $2 = c.participant_high)
+        AND NOT EXISTS (SELECT 1 FROM account_block b
+          WHERE (b.blocker_id = c.participant_low AND b.blocked_id = c.participant_high)
+             OR (b.blocker_id = c.participant_high AND b.blocked_id = c.participant_low))''',
+      parameters: [conversationId, viewerId],
+    );
+    if (access.isEmpty) {
+      throw const ApiException(404, 'Conversation was not found.');
+    }
+  }
+
+  Future<void> markRead(
+    String viewerId,
+    String conversationInput,
+    Map<String, Object?> input,
+  ) async {
+    final id = _parseUuid(conversationInput, 'Conversation ID');
+    if (input.length != 1) {
+      throw const ApiException(400, 'Read receipt is invalid.');
+    }
+    final messageId = _parseUuid(input['lastMessageId'], 'Message ID');
+    await _requireConversation(viewerId, id);
+    // Bind the receipt to a message actually returned to the client, not now(),
+    // so an incoming message during the request cannot be marked read unseen.
+    await _database.query(
+      r'''INSERT INTO direct_conversation_read(conversation_id, user_id, last_read_at, last_read_message_id)
+      SELECT $1, $2, m.created_at, m.id FROM direct_message m JOIN direct_conversation c ON c.id = m.conversation_id
+      WHERE m.id = $3 AND m.conversation_id = $1 AND ($2 = c.participant_low OR $2 = c.participant_high)
+        AND NOT EXISTS (SELECT 1 FROM account_block b
+          WHERE (b.blocker_id = c.participant_low AND b.blocked_id = c.participant_high)
+             OR (b.blocker_id = c.participant_high AND b.blocked_id = c.participant_low))
+      ON CONFLICT (conversation_id, user_id) DO UPDATE
+      SET last_read_at = EXCLUDED.last_read_at, last_read_message_id = EXCLUDED.last_read_message_id
+      WHERE (direct_conversation_read.last_read_at, direct_conversation_read.last_read_message_id)
+          < (EXCLUDED.last_read_at, EXCLUDED.last_read_message_id)''',
+      parameters: [id, viewerId, messageId],
+    );
   }
 }
 

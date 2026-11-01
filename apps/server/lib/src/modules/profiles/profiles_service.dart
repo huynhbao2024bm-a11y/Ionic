@@ -62,6 +62,7 @@ class ProfilesService {
          FROM app_user u
          JOIN user_profile p ON p.user_id = u.id
          WHERE u.state = 'active' AND p.visibility = 'public' AND u.id <> $1
+           AND NOT EXISTS (SELECT 1 FROM account_setting s WHERE s.user_id = u.id AND s.discoverable = false)
            AND (lower(u.handle) LIKE $2 ESCAPE '\' OR lower(p.display_name) LIKE $2 ESCAPE '\')
            AND NOT EXISTS (
              SELECT 1 FROM account_block b

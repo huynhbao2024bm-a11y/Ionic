@@ -3,10 +3,11 @@ import 'dart:convert';
 import 'package:shelf/shelf.dart';
 
 class ApiException implements Exception {
-  const ApiException(this.statusCode, this.message);
+  const ApiException(this.statusCode, this.message, {this.code});
 
   final int statusCode;
   final String message;
+  final String? code;
 }
 
 Response apiErrorResponse(ApiException error) {
@@ -27,6 +28,7 @@ Response apiErrorResponse(ApiException error) {
       'statusCode': error.statusCode,
       'error': label.isEmpty ? title : label,
       'message': error.message,
+      if (error.code != null) 'code': error.code,
     }),
     headers: const {'content-type': 'application/json; charset=utf-8'},
   );

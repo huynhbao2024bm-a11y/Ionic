@@ -60,6 +60,8 @@ class FeedCandidate {
     required this.visibleToViewer,
     this.duplicateGroupId,
     this.qualityScore,
+    this.semanticAffinity = 0,
+    this.semanticAversion = 0,
   });
 
   final String id;
@@ -71,6 +73,9 @@ class FeedCandidate {
   final bool visibleToViewer;
   final String? duplicateGroupId;
   final double? qualityScore;
+  // Bounded evidence scores, never calibrated probabilities.
+  final double semanticAffinity;
+  final double semanticAversion;
 }
 
 class ExplicitInterest {
@@ -239,6 +244,7 @@ class RankerConfig {
     required this.recentExposureWindowMs,
     required this.minimumPreferenceConfidence,
     required this.strongMatchThreshold,
+    required this.nonDiscriminativeLabelPrevalenceThreshold,
     required this.maxPerCreator,
     required this.maxPerTopic,
     required this.maxConsecutiveTopic,
@@ -254,6 +260,7 @@ class RankerConfig {
   final double recentExposureWindowMs;
   final double minimumPreferenceConfidence;
   final double strongMatchThreshold;
+  final double nonDiscriminativeLabelPrevalenceThreshold;
   final int maxPerCreator;
   final int maxPerTopic;
   final int maxConsecutiveTopic;

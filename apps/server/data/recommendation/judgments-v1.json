@@ -34,6 +34,7 @@
       "id": "known-design-interest",
       "description": "Explicit design interest should rank direct design content above fresh fallback content.",
       "limit": 6,
+      "expectedTopContentIds": ["design-accessibility", "design-research", "design-product", "design-creativity"],
       "profile": { "explicitInterests": [{ "dimension": "topic", "labelId": "topic.design" }] },
       "candidates": [
         { "id": "design-accessibility", "creatorId": "creator-h", "ageHours": 3, "text": "Checklist thiết kế giao diện dễ tiếp cận, kèm ví dụ thực tế.", "grade": 3 },
@@ -103,6 +104,22 @@
         { "id": "fresh-design-c", "creatorId": "creator-ag", "ageHours": 48, "text": "Một quy trình thiết kế giao diện đã dùng tháng trước.", "grade": 2 },
         { "id": "fresh-design-d", "creatorId": "creator-ah", "ageHours": 240, "text": "Ghi chú cũ về thiết kế giao diện.", "grade": 1 },
         { "id": "fresh-product", "creatorId": "creator-ai", "ageHours": 0.2, "text": "Một cập nhật sản phẩm mới cho người dùng.", "grade": 1 }
+      ]
+    },
+    {
+      "id": "common-format-does-not-become-topic-interest",
+      "description": "A learned text-format preference shared by the whole text-only candidate pool must not promote unrelated fresh content above a topical match.",
+      "limit": 2,
+      "expectedTopContentIds": ["common-format-design", "common-format-astronomy"],
+      "profile": {
+        "preferences": [
+          { "dimension": "topic", "labelId": "topic.design", "sourceSummary": ["like", "save"], "score": 0.48, "confidence": 0.992, "updatedHoursAgo": 0.01, "expiresInDays": 30 },
+          { "dimension": "format", "labelId": "format.text", "sourceSummary": ["like", "save"], "score": 0.6, "confidence": 1, "updatedHoursAgo": 0.01, "expiresInDays": 30 }
+        ]
+      },
+      "candidates": [
+        { "id": "common-format-design", "creatorId": "creator-aj", "ageHours": 24, "text": "Thiết kế giao diện có cấu trúc rõ ràng và kiểm tra trải nghiệm người dùng.", "grade": 3 },
+        { "id": "common-format-astronomy", "creatorId": "creator-ak", "ageHours": 0.2, "text": "Tối nay quan sát các chòm sao và tìm hiểu thiên văn.", "grade": 0 }
       ]
     }
   ]

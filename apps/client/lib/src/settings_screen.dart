@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import 'ionic_api.dart';
+import 'dialogs.dart';
+import 'account_controls.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
@@ -11,6 +13,7 @@ class SettingsScreen extends StatefulWidget {
     required this.themeMode,
     required this.onThemeModeChanged,
     required this.onSignOut,
+    required this.onSessionEnded,
     required this.onToast,
     super.key,
   });
@@ -22,6 +25,7 @@ class SettingsScreen extends StatefulWidget {
   final ThemeMode themeMode;
   final Future<void> Function(ThemeMode mode) onThemeModeChanged;
   final VoidCallback onSignOut;
+  final VoidCallback onSessionEnded;
   final ValueChanged<String> onToast;
 
   @override
@@ -98,7 +102,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _saveProfile() async {
     final current = _profile;
     if (current == null) return;
-    final draft = await showDialog<_ProfileDraft>(
+    final draft = await showIonicDialog<_ProfileDraft>(
       context: context,
       builder: (context) => _ProfileEditDialog(profile: current),
     );
@@ -140,7 +144,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _resetPersonalization() async {
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showIonicDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Đặt lại bảng tin?'),
@@ -263,8 +267,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 _guestCard(context),
                 const SizedBox(height: 14),
                 _appearanceSection(context),
-              ]
-              else ...[
+              ] else ...[
                 if (_error != null) _errorCard(context),
                 if (_loading && _profile == null)
                   const Padding(
@@ -273,6 +276,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   )
                 else ...[
                   _accountSection(context),
+                  AccountControls(
+                    key: ValueKey(user.id),
+                    api: widget.api,
+                    userId: user.id,
+                    onSessionEnded: widget.onSessionEnded,
+                    onToast: widget.onToast,
+                  ),
                   const SizedBox(height: 14),
                   _feedSection(context),
                   const SizedBox(height: 14),
@@ -370,15 +380,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       children: [
         SwitchListTile.adaptive(
           contentPadding: EdgeInsets.zero,
-          value: _paused,
+          value: !_paused,
           onChanged: _loading || _profile == null || _savingPause
               ? null
-              : _setPaused,
+              : (value) => _setPaused(!value),
           title: const Text('Cá nhân hóa bảng tin'),
           subtitle: Text(
             _paused
                 ? 'Đang tạm dừng cập nhật theo hoạt động của bạn.'
-                : 'Sắp xếp nội dung dựa trên tùy chỉnh và hoạt động trong Ionic.',
+                : 'Điều chỉnh nội dung theo lượt thích, lưu và thời gian xem khi bạn mở ứng dụng.',
           ),
           secondary: _savingPause
               ? const SizedBox(
@@ -386,7 +396,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   height: 22,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              : const Icon(Icons.auto_awesome_outlined),
+              : const Icon(Icons.tune_rounded),
         ),
         const Divider(height: 18),
         ListTile(
@@ -394,7 +404,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           leading: const Icon(Icons.restart_alt_rounded),
           title: const Text('Đặt lại bảng tin'),
           subtitle: const Text(
-            'Xóa tùy chỉnh và dữ liệu cá nhân hóa đã tích lũy.',
+            'Xóa tùy chỉnh, lịch sử xem và dữ liệu gợi ý đã tích lũy.',
           ),
           trailing: _resetting
               ? const SizedBox(
@@ -404,6 +414,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 )
               : const Icon(Icons.chevron_right_rounded),
           onTap: _resetting ? null : _resetPersonalization,
+        ),
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 8),
+          child: Text(
+            'Chi tiết lượt xem được giữ tối đa 7 ngày; dữ liệu tổng hợp tối đa 30 ngày. Bạn có thể tạm dừng hoặc đặt lại.',
+          ),
         ),
       ],
     ),
@@ -425,27 +441,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
     context,
     icon: Icons.contrast_rounded,
     title: 'Giao diện',
-    child: SwitchListTile.adaptive(
-      contentPadding: EdgeInsets.zero,
-      value: widget.themeMode == ThemeMode.dark,
-      onChanged: _savingTheme
-          ? null
-          : (value) => _setTheme(value ? ThemeMode.dark : ThemeMode.light),
-      title: Text(
-        widget.themeMode == ThemeMode.dark ? 'Chế độ tối' : 'Chế độ sáng',
-      ),
-      subtitle: const Text('Lưu trên thiết bị này.'),
-      secondary: _savingTheme
-          ? const SizedBox(
-              width: 22,
-              height: 22,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          : Icon(
-              widget.themeMode == ThemeMode.dark
-                  ? Icons.dark_mode_outlined
-                  : Icons.light_mode_outlined,
-            ),
+    child: Column(
+      children: [
+        SwitchListTile.adaptive(
+          contentPadding: EdgeInsets.zero,
+          value: widget.themeMode == ThemeMode.dark,
+          onChanged: _savingTheme
+              ? null
+              : (value) => _setTheme(value ? ThemeMode.dark : ThemeMode.light),
+          title: Text(
+            widget.themeMode == ThemeMode.dark ? 'Chế độ tối' : 'Chế độ sáng',
+          ),
+          subtitle: const Text('Lưu trên thiết bị này.'),
+          secondary: _savingTheme
+              ? const SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Icon(
+                  widget.themeMode == ThemeMode.dark
+                      ? Icons.dark_mode_outlined
+                      : Icons.light_mode_outlined,
+                ),
+        ),
+        DeviceDisplayControls(onToast: widget.onToast),
+      ],
     ),
   );
 

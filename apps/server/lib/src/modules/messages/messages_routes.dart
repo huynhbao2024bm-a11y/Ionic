@@ -26,6 +26,18 @@ Handler createMessagesRoutes(DatabaseService database) {
       (Request request, String conversationId) =>
           _list(request, conversationId, auth, messages),
     )
+    ..post('/conversations/<conversationId>/read', (
+      Request request,
+      String conversationId,
+    ) async {
+      final user = await requireAuthenticatedUser(request, auth);
+      await messages.markRead(
+        user.id,
+        conversationId,
+        await readJsonObject(request),
+      );
+      return _json(200, const {'status': 'read'});
+    })
     ..post(
       '/conversations/<conversationId>',
       (Request request, String conversationId) =>

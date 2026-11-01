@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:ionic_server/src/http/api_exception.dart';
 import 'package:ionic_server/src/modules/database/database_service.dart';
 import 'package:ionic_server/src/modules/media/media_attachment_service.dart';
+import 'package:ionic_server/src/modules/media/media_cleanup_service.dart';
 import 'package:ionic_server/src/modules/recommendation/content_labeler.dart';
 import 'package:ionic_server/src/modules/recommendation/recommendation_signals.dart';
 import 'package:ionic_server/src/modules/recommendation/text_label_rules.dart';
@@ -26,17 +27,128 @@ class _PostsCursor {
   final String id;
 }
 
+Future<void> _checkPublishRetry(
+  TxSession tx,
+  Map<String, dynamic> row,
+  String authorId,
+  String body,
+  String id,
+  bool reply,
+  List<String> attachmentIds,
+) async {
+  if ('${row['author_id']}' != authorId || '${row['body']}' != body) {
+    throw const ApiException(409, 'Publish ID has already been used.');
+  }
+  final rows = await tx.execute(
+    reply
+        ? r'SELECT media_asset_id FROM content_attachment WHERE reply_id = $1 ORDER BY position'
+        : r'SELECT media_asset_id FROM content_attachment WHERE content_id = $1 ORDER BY position',
+    parameters: [id],
+  );
+  if (jsonEncode(rows.map((r) => '${r.first}').toList()) !=
+      jsonEncode(attachmentIds)) {
+    throw const ApiException(409, 'Publish ID has already been used.');
+  }
+}
+
 class PostsService {
   PostsService(this._database) : _signals = RecommendationSignalsService();
 
   final DatabaseService _database;
   final RecommendationSignalsService _signals;
 
+  Future<Map<String, String>> deleteOwn(String viewerId, String inputId) async {
+    final id = _parseContentId(inputId);
+    await _database.query(
+      r'DELETE FROM content WHERE id = $1 AND author_id = $2',
+      parameters: [id, viewerId],
+    );
+    await MediaCleanupService(_database).drainBestEffort();
+    return {'status': 'deleted'};
+  }
+
+  Future<Map<String, String>> editOwn(
+    String viewerId,
+    String inputId,
+    Map<String, Object?> input,
+  ) async {
+    final id = _parseContentId(inputId);
+    if (input.length != 1 || input['body'] is! String) {
+      throw const ApiException(400, 'Post body is invalid.');
+    }
+    final body = unorm.nfc((input['body'] as String).trim());
+    if (body.isEmpty || body.length > 280) {
+      throw const ApiException(400, 'Post body must contain 1–280 characters.');
+    }
+    final version = _activeTaxonomyVersion();
+    final labels = labelContent(
+      LabelContentInput(
+        taxonomyVersion: version,
+        kind: ContentKind.text,
+        text: body,
+        formatLabelIds: const {ContentKind.text: 'format.text'},
+        keywordRules: textLabelRules,
+      ),
+    );
+    await _database.transaction((tx) async {
+      final changed = await tx.execute(
+        r'''UPDATE content SET body = $3, updated_at = now()
+        WHERE id = $1 AND author_id = $2 AND kind = 'text' AND status = 'published' AND deleted_at IS NULL RETURNING id''',
+        parameters: [id, viewerId, body],
+      );
+      if (changed.isEmpty) throw const ApiException(404, 'Post was not found.');
+      await tx.execute(
+        r'DELETE FROM content_label WHERE content_id = $1',
+        parameters: [id],
+      );
+      for (final label in labels) {
+        await tx.execute(
+          r'''INSERT INTO content_label(content_id, taxonomy_version, dimension, label_id, confidence, source)
+          VALUES ($1, $2, $3, $4, $5, $6)''',
+          parameters: [
+            id,
+            version,
+            label.dimension.name,
+            label.labelId,
+            label.confidence,
+            label.source.name,
+          ],
+        );
+      }
+    });
+    return {'status': 'updated'};
+  }
+
+  Future<Map<String, Object?>> listSaved(
+    String viewerId,
+    int limit,
+    String? cursorInput,
+  ) async {
+    final cursor = _parsePostsCursor(cursorInput);
+    final rows = await _database.query(
+      r'''SELECT c.id, c.author_id, c.body, c.created_at, u.handle AS author_handle, p.display_name AS author_display_name,
+      (SELECT count(*)::int FROM content_reaction r WHERE r.content_id = c.id) AS like_count,
+      (SELECT count(*)::int FROM content_reply r WHERE r.content_id = c.id AND r.status = 'published') AS reply_count,
+      EXISTS (SELECT 1 FROM content_reaction r WHERE r.content_id = c.id AND r.user_id = $1) AS liked, true AS saved
+      FROM content_bookmark b JOIN content c ON c.id = b.content_id
+      JOIN app_user u ON u.id = c.author_id AND u.state = 'active' JOIN user_profile p ON p.user_id = u.id
+      WHERE b.user_id = $1 AND c.kind = 'text' AND c.status = 'published' AND c.deleted_at IS NULL
+        AND (p.visibility = 'public' OR u.id = $1 OR EXISTS (SELECT 1 FROM account_follow f WHERE f.follower_id = $1 AND f.followed_id = u.id))
+        AND NOT EXISTS (SELECT 1 FROM account_block bl WHERE (bl.blocker_id = $1 AND bl.blocked_id = u.id) OR (bl.blocker_id = u.id AND bl.blocked_id = $1))
+        AND ($2::timestamptz IS NULL OR (c.created_at, c.id) < ($2, $3::uuid))
+      ORDER BY c.created_at DESC, c.id DESC LIMIT $4''',
+      parameters: [viewerId, cursor?.createdAt, cursor?.id, limit + 1],
+    );
+    return _postPage(rows, limit, includeAuthor: true, database: _database);
+  }
+
   Future<Map<String, Object?>> create(
     String authorId,
     Map<String, Object?> input,
   ) async {
-    if (input.keys.any((key) => key != 'body' && key != 'attachmentIds')) {
+    if (input.keys.any(
+      (key) => !['body', 'attachmentIds', 'clientPublishId'].contains(key),
+    )) {
       throw const ApiException(400, 'Request contains an unsupported field.');
     }
     final attachmentIds = parseAttachmentIds(input['attachmentIds']);
@@ -47,7 +159,9 @@ class PostsService {
     if (body.isEmpty || body.length > 280) {
       throw const ApiException(400, 'Post body must contain 1–280 characters.');
     }
-    final id = _randomUuid();
+    final id = input.containsKey('clientPublishId')
+        ? _parseContentId('${input['clientPublishId']}')
+        : _randomUuid();
     final version = _activeTaxonomyVersion();
     final labels = labelContent(
       LabelContentInput(
@@ -63,6 +177,27 @@ class PostsService {
     );
 
     final created = await _database.transaction((transaction) async {
+      await transaction.execute(
+        r'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+        parameters: ['post:$id'],
+      );
+      final previous = await transaction.execute(
+        r'SELECT id, author_id, body, created_at FROM content WHERE id = $1',
+        parameters: [id],
+      );
+      if (previous.isNotEmpty) {
+        final row = previous.first.toColumnMap();
+        await _checkPublishRetry(
+          transaction,
+          row,
+          authorId,
+          body,
+          id,
+          false,
+          attachmentIds,
+        );
+        return row;
+      }
       final inserted = await transaction.execute(
         r'''INSERT INTO content (id, author_id, body)
             VALUES ($1, $2, $3) RETURNING id, author_id, body, created_at''',
@@ -365,7 +500,9 @@ class PostsService {
     Map<String, Object?> input,
   ) async {
     final contentId = _parseContentId(inputContentId);
-    if (input.keys.any((key) => key != 'body' && key != 'attachmentIds') ||
+    if (input.keys.any(
+          (key) => !['body', 'attachmentIds', 'clientPublishId'].contains(key),
+        ) ||
         input['body'] is! String) {
       throw const ApiException(400, 'Reply body is invalid.');
     }
@@ -374,9 +511,46 @@ class PostsService {
     if (body.isEmpty || body.length > 500) {
       throw const ApiException(400, 'Reply must contain 1–500 characters.');
     }
-    final id = _randomUuid();
+    final id = input.containsKey('clientPublishId')
+        ? _parseContentId('${input['clientPublishId']}')
+        : _randomUuid();
     final createdReply = await _database.transaction((transaction) async {
       await _assertCanInteract(transaction, viewerId, contentId);
+      await transaction.execute(
+        r'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+        parameters: ['reply:$id'],
+      );
+      final previous = await transaction.execute(
+        r'SELECT id, author_id, body, created_at, content_id FROM content_reply WHERE id = $1',
+        parameters: [id],
+      );
+      if (previous.isNotEmpty) {
+        final row = previous.first.toColumnMap();
+        if ('${row['content_id']}' != contentId) {
+          throw const ApiException(409, 'Publish ID has already been used.');
+        }
+        await _checkPublishRetry(
+          transaction,
+          row,
+          viewerId,
+          body,
+          id,
+          true,
+          attachmentIds,
+        );
+        final author = await transaction.execute(
+          r'SELECT u.handle, p.display_name FROM app_user u JOIN user_profile p ON p.user_id = u.id WHERE u.id = $1',
+          parameters: [viewerId],
+        );
+        return <String, Object?>{
+          'id': '${row['id']}',
+          'authorId': viewerId,
+          'authorHandle': '${author.first[0]}',
+          'authorDisplayName': '${author.first[1]}',
+          'body': body,
+          'createdAt': _dateTime(row['created_at']).toUtc().toIso8601String(),
+        };
+      }
       final inserted = await transaction.execute(
         r'''INSERT INTO content_reply(id, content_id, author_id, body)
             SELECT $1, $2, u.id, $4 FROM app_user u JOIN user_profile p ON p.user_id = u.id
@@ -447,14 +621,23 @@ class PostsService {
            JOIN app_user u ON u.id = r.author_id AND u.state = 'active'
            JOIN user_profile p ON p.user_id = u.id
            WHERE r.content_id = $1 AND r.status = 'published'
+             AND NOT EXISTS (SELECT 1 FROM account_block b WHERE
+               (b.blocker_id = $5 AND b.blocked_id = r.author_id) OR (b.blocker_id = r.author_id AND b.blocked_id = $5))
              AND ($2::timestamptz IS NULL OR (r.created_at, r.id) < ($2::timestamptz, $3::uuid))
            ORDER BY r.created_at DESC, r.id DESC LIMIT $4''',
-        parameters: [contentId, cursor?.createdAt, cursor?.id, limit + 1],
+        parameters: [
+          contentId,
+          cursor?.createdAt,
+          cursor?.id,
+          limit + 1,
+          viewerId,
+        ],
       );
       final page = _pageRows(result, limit);
       final attachmentViews = await replyAttachmentViews(
         _database,
         page.rows.map((row) => '${row.toColumnMap()['id']}').toList(),
+        transaction: transaction,
       );
       final items = page.rows.map((row) {
         final value = row.toColumnMap();

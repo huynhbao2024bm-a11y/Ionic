@@ -68,7 +68,7 @@ Future<Response> _file(
   }
   final asset = await media.read(viewerId, mediaId);
   return Response.ok(
-    asset.path.openRead(),
+    asset.stream,
     headers: {
       'content-type': asset.mimeType,
       'content-length': '${asset.byteSize}',

@@ -93,17 +93,19 @@ Future<Map<String, List<Map<String, Object?>>>> contentAttachmentViews(
 
 Future<Map<String, List<Map<String, Object?>>>> replyAttachmentViews(
   DatabaseService database,
-  List<String> parentIds,
-) async {
+  List<String> parentIds, {
+  TxSession? transaction,
+}) async {
   if (parentIds.isEmpty) return const {};
-  final rows = await database.query(
-    r'''SELECT ca.reply_id AS parent_id, a.id, a.media_type, a.mime_type,
+  const sql =
+      r'''SELECT ca.reply_id AS parent_id, a.id, a.media_type, a.mime_type,
                a.byte_size, a.width, a.height, a.duration_ms
         FROM content_attachment ca JOIN media_asset a ON a.id = ca.media_asset_id
         WHERE ca.reply_id = ANY($1::uuid[]) AND a.processing_state = 'ready'
-        ORDER BY ca.reply_id, ca.position''',
-    parameters: [parentIds],
-  );
+        ORDER BY ca.reply_id, ca.position''';
+  final rows =
+      await (transaction?.execute(sql, parameters: [parentIds]) ??
+          database.query(sql, parameters: [parentIds]));
   return _groupAttachmentViews(rows);
 }
 

@@ -7,11 +7,14 @@ import 'package:camera/camera.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:just_audio/just_audio.dart';
 import 'package:video_player/video_player.dart';
 
 import 'ionic_api.dart';
+import 'dialogs.dart';
 import 'media_composer.dart';
+import 'voice_player.dart';
+import 'client_preferences.dart';
+import 'feed_attention.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
@@ -38,6 +41,8 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  final _feedViewport = GlobalKey();
+  late final FeedAttentionController _attention;
   final _search = TextEditingController();
   Timer? _searchDelay;
   bool _busy = false;
@@ -55,6 +60,15 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    _attention = FeedAttentionController(
+      viewportKey: _feedViewport,
+      isActive: () =>
+          mounted &&
+          widget.user != null &&
+          _search.text.isEmpty &&
+          (ModalRoute.of(context)?.isCurrent ?? false),
+      send: (items) => widget.api.recordAttention(items),
+    );
     _load();
   }
 
@@ -62,6 +76,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void didUpdateWidget(covariant HomeScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.user?.id != widget.user?.id) {
+      _attention.reset();
       _accountEpoch++;
       _searchEpoch++;
       _feedEpoch++;
@@ -84,12 +99,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _attention.dispose();
     _searchDelay?.cancel();
     _search.dispose();
     super.dispose();
   }
 
   Future<void> _load({bool append = false}) async {
+    if (append && (_busy || _cursor == null)) return;
     final epoch = _accountEpoch;
     if (!append) _feedEpoch++;
     final feedEpoch = _feedEpoch;
@@ -103,11 +120,24 @@ class _HomeScreenState extends State<HomeScreen> {
           : await widget.api.forYou(cursor: append ? _cursor : null);
       if (!mounted || epoch != _accountEpoch || feedEpoch != _feedEpoch) return;
       setState(() {
-        _posts = append ? [..._posts, ...page.items] : page.items;
+        _posts = append
+            ? {
+                for (final item in [..._posts, ...page.items]) item.id: item,
+              }.values.toList()
+            : page.items;
         _cursor = page.nextCursor;
         _error = null;
       });
     } catch (error) {
+      if (mounted &&
+          epoch == _accountEpoch &&
+          feedEpoch == _feedEpoch &&
+          append &&
+          error is IonicApiException &&
+          error.code == 'FEED_CURSOR_STALE') {
+        await _load();
+        return;
+      }
       if (mounted && epoch == _accountEpoch && feedEpoch == _feedEpoch) {
         setState(() => _error = apiErrorText(error));
       }
@@ -170,8 +200,10 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     _setActionBusy('like:${post.id}', true);
+    final epoch = _accountEpoch;
     try {
       final result = await widget.api.setLike(post.id, !post.liked);
+      if (!mounted || epoch != _accountEpoch) return;
       setState(
         () => _updatePost(
           post.id,
@@ -183,9 +215,11 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       );
     } catch (error) {
-      widget.onToast(apiErrorText(error));
+      if (mounted && epoch == _accountEpoch) {
+        widget.onToast(apiErrorText(error));
+      }
     } finally {
-      _setActionBusy('like:${post.id}', false);
+      if (epoch == _accountEpoch) _setActionBusy('like:${post.id}', false);
     }
   }
 
@@ -196,8 +230,10 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     _setActionBusy('save:${post.id}', true);
+    final epoch = _accountEpoch;
     try {
       final result = await widget.api.setSaved(post.id, !post.saved);
+      if (!mounted || epoch != _accountEpoch) return;
       setState(
         () => _updatePost(
           post.id,
@@ -205,15 +241,20 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       );
     } catch (error) {
-      widget.onToast(apiErrorText(error));
+      if (mounted && epoch == _accountEpoch) {
+        widget.onToast(apiErrorText(error));
+      }
     } finally {
-      _setActionBusy('save:${post.id}', false);
+      if (epoch == _accountEpoch) _setActionBusy('save:${post.id}', false);
     }
   }
 
-  void _setActionBusy(String key, bool value) => setState(() {
-    value ? _actionBusy.add(key) : _actionBusy.remove(key);
-  });
+  void _setActionBusy(String key, bool value) {
+    if (!mounted) return;
+    setState(() {
+      value ? _actionBusy.add(key) : _actionBusy.remove(key);
+    });
+  }
 
   void _updatePost(String id, FeedPost Function(FeedPost) update) {
     _posts = _posts
@@ -237,12 +278,15 @@ class _HomeScreenState extends State<HomeScreen> {
       await widget.onAuthenticate(mode: 'login');
       return;
     }
+    final accountEpoch = _accountEpoch;
     try {
       if (action == 'more' || action == 'less') {
         await widget.api.setPreference(post.id, action);
       }
+      if (!mounted || accountEpoch != _accountEpoch) return;
       if (action == 'hide') {
         await widget.api.hidePost(post.id);
+        if (!mounted || accountEpoch != _accountEpoch) return;
         if (mounted) {
           setState(() {
             _posts.removeWhere((item) => item.id == post.id);
@@ -252,12 +296,25 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       if (action == 'mute') {
         await widget.api.mute(post.handle, true);
+        if (!mounted || accountEpoch != _accountEpoch) return;
         if (mounted) {
           setState(() {
             _posts.removeWhere((item) => item.handle == post.handle);
             _searchPosts.removeWhere((item) => item.handle == post.handle);
           });
         }
+      }
+      if (action == 'more' || action == 'less') {
+        // Apply the saved control immediately so the visible feed reflects the
+        // server's new ranking instead of waiting for a manual refresh.
+        await _load();
+        if (!mounted || accountEpoch != _accountEpoch) return;
+        widget.onToast(
+          _error == null
+              ? 'Đã cập nhật bảng tin.'
+              : 'Đã lưu lựa chọn; chưa thể tải lại bảng tin.',
+        );
+        return;
       }
       widget.onToast(
         action == 'hide'
@@ -267,6 +324,7 @@ class _HomeScreenState extends State<HomeScreen> {
             : 'Đã cập nhật bảng tin.',
       );
     } catch (error) {
+      if (!mounted || accountEpoch != _accountEpoch) return;
       widget.onToast(apiErrorText(error));
     }
   }
@@ -276,7 +334,7 @@ class _HomeScreenState extends State<HomeScreen> {
       await widget.onAuthenticate(mode: 'login');
       return;
     }
-    final result = await showDialog<(String, String)>(
+    final result = await showIonicDialog<(String, String)>(
       context: context,
       builder: (context) => const _ReportDialog(),
     );
@@ -294,7 +352,7 @@ class _HomeScreenState extends State<HomeScreen> {
       await widget.onAuthenticate(mode: 'login');
       return;
     }
-    await showDialog<void>(
+    await showIonicDialog<void>(
       context: context,
       builder: (context) =>
           _RepliesDialog(api: widget.api, post: post, onToast: widget.onToast),
@@ -315,6 +373,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ? _runSearch(_search.text.trim())
                   : _load(),
               child: ListView(
+                key: _feedViewport,
                 padding: const EdgeInsets.fromLTRB(22, 10, 22, 34),
                 children: [
                   TextField(
@@ -350,17 +409,23 @@ class _HomeScreenState extends State<HomeScreen> {
                     if (!_busy && _posts.isEmpty && _error == null)
                       _EmptyFeed(onRefresh: _load),
                     for (final post in _posts) ...[
-                      PostCard(
-                        post: post,
-                        busy:
-                            _actionBusy.contains('like:${post.id}') ||
-                            _actionBusy.contains('save:${post.id}'),
-                        api: widget.api,
-                        onOpenProfile: () => widget.onOpenProfile(post.handle),
-                        onLike: () => _toggleLike(post),
-                        onSave: () => _toggleSave(post),
-                        onReply: () => _openReplies(post),
-                        onMenu: (action) => _postMenu(post, action),
+                      FeedAttentionTarget(
+                        key: ValueKey('attention:${post.id}:${post.receiptId}'),
+                        receiptId: post.receiptId,
+                        controller: _attention,
+                        child: PostCard(
+                          post: post,
+                          busy:
+                              _actionBusy.contains('like:${post.id}') ||
+                              _actionBusy.contains('save:${post.id}'),
+                          api: widget.api,
+                          onOpenProfile: () =>
+                              widget.onOpenProfile(post.handle),
+                          onLike: () => _toggleLike(post),
+                          onSave: () => _toggleSave(post),
+                          onReply: () => _openReplies(post),
+                          onMenu: (action) => _postMenu(post, action),
+                        ),
                       ),
                       const SizedBox(height: 14),
                     ],
@@ -677,7 +742,12 @@ class _PostAttachments extends StatelessWidget {
               );
             },
           ),
-        if (voice != null) _VoiceNotePlayer(api: currentApi, attachment: voice),
+        if (voice != null)
+          VoicePlayer(
+            key: ValueKey(voice.id),
+            load: () => currentApi.mediaBytes(voice.id),
+            durationMs: voice.durationMs ?? 0,
+          ),
       ],
     );
   }
@@ -693,18 +763,72 @@ class _AttachmentImage extends StatefulWidget {
 }
 
 class _AttachmentImageState extends State<_AttachmentImage> {
-  late Future<Uint8List> _bytes = widget.api.mediaBytes(widget.attachment.id);
+  Future<Uint8List>? _bytes;
+
+  Future<Uint8List> _loadImage() {
+    final future = widget.api.mediaBytes(widget.attachment.id);
+    // Listen immediately, before the next frame attaches FutureBuilder.
+    future.ignore();
+    return future;
+  }
+
+  void _retryImage() => setState(() {
+    _bytes = _loadImage();
+  });
+
+  void _openImage(Uint8List bytes) => showIonicDialog<void>(
+    context: context,
+    builder: (context) => Dialog.fullscreen(
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Ảnh đính kèm'),
+          leading: IconButton(
+            tooltip: 'Đóng ảnh',
+            icon: const Icon(Icons.close),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ),
+        body: Center(
+          child: InteractiveViewer(
+            minScale: 1,
+            maxScale: 5,
+            child: Image.memory(bytes, fit: BoxFit.contain),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (!clientPreferences.dataSaver) {
+      _bytes = _loadImage();
+    }
+  }
 
   @override
   void didUpdateWidget(covariant _AttachmentImage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.attachment.id != widget.attachment.id) {
-      _bytes = widget.api.mediaBytes(widget.attachment.id);
+      _bytes = clientPreferences.dataSaver ? null : _loadImage();
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_bytes == null) {
+      return SizedBox(
+        height: 180,
+        child: Center(
+          child: OutlinedButton.icon(
+            onPressed: _retryImage,
+            icon: const Icon(Icons.image_outlined),
+            label: const Text('Tải ảnh'),
+          ),
+        ),
+      );
+    }
     final ratio =
         widget.attachment.width != null && widget.attachment.height != null
         ? (widget.attachment.width! / widget.attachment.height!).clamp(.65, 1.8)
@@ -726,13 +850,20 @@ class _AttachmentImageState extends State<_AttachmentImage> {
               future: _bytes,
               builder: (context, snapshot) {
                 if (snapshot.hasData) {
-                  return Image.memory(
-                    snapshot.data!,
-                    cacheWidth: cacheWidth,
-                    fit: BoxFit.cover,
-                    gaplessPlayback: true,
-                    errorBuilder: (_, _, _) =>
-                        _imagePlaceholder(context, failed: true),
+                  return InkWell(
+                    onTap: () => _openImage(snapshot.data!),
+                    child: Semantics(
+                      label: 'Mở ảnh đính kèm',
+                      button: true,
+                      child: Image.memory(
+                        snapshot.data!,
+                        cacheWidth: cacheWidth,
+                        fit: BoxFit.cover,
+                        gaplessPlayback: true,
+                        errorBuilder: (_, _, _) =>
+                            _imagePlaceholder(context, failed: true),
+                      ),
+                    ),
                   );
                 }
                 return _imagePlaceholder(context, failed: snapshot.hasError);
@@ -749,9 +880,10 @@ class _AttachmentImageState extends State<_AttachmentImage> {
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
         child: Center(
           child: failed
-              ? Icon(
-                  Icons.broken_image_outlined,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ? IconButton(
+                  tooltip: 'Tải lại ảnh',
+                  onPressed: _retryImage,
+                  icon: const Icon(Icons.refresh_rounded),
                 )
               : const SizedBox(
                   width: 22,
@@ -760,130 +892,6 @@ class _AttachmentImageState extends State<_AttachmentImage> {
                 ),
         ),
       );
-}
-
-class _VoiceNotePlayer extends StatefulWidget {
-  const _VoiceNotePlayer({required this.api, required this.attachment});
-  final IonicApi api;
-  final ApiAttachment attachment;
-
-  @override
-  State<_VoiceNotePlayer> createState() => _VoiceNotePlayerState();
-}
-
-class _VoiceNotePlayerState extends State<_VoiceNotePlayer> {
-  final AudioPlayer _player = AudioPlayer();
-  bool _loading = false;
-  bool _loaded = false;
-  String? _error;
-
-  Future<void> _toggle() async {
-    if (_loading) return;
-    setState(() {
-      _error = null;
-      _loading = true;
-    });
-    try {
-      if (!_loaded) {
-        final bytes = await widget.api.mediaBytes(widget.attachment.id);
-        await _player.setAudioSource(_MemoryWaveSource(bytes));
-        _loaded = true;
-      }
-      if (_player.playing) {
-        await _player.pause();
-      } else {
-        if (_player.processingState == ProcessingState.completed) {
-          await _player.seek(Duration.zero);
-        }
-        unawaited(_player.play());
-      }
-    } catch (_) {
-      if (mounted) setState(() => _error = 'Không phát được voice.');
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  @override
-  void dispose() {
-    _player.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => Card(
-    margin: const EdgeInsets.only(top: 8),
-    color: Theme.of(context).colorScheme.surfaceContainerHighest,
-    child: Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      child: Row(
-        children: [
-          StreamBuilder<PlayerState>(
-            stream: _player.playerStateStream,
-            builder: (context, snapshot) => IconButton.filledTonal(
-              tooltip: snapshot.data?.playing == true
-                  ? 'Tạm dừng voice'
-                  : 'Phát voice',
-              onPressed: _toggle,
-              icon: _loading
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : Icon(
-                      snapshot.data?.playing == true
-                          ? Icons.pause_rounded
-                          : Icons.play_arrow_rounded,
-                    ),
-            ),
-          ),
-          const SizedBox(width: 6),
-          const Icon(Icons.graphic_eq_rounded, size: 20),
-          const SizedBox(width: 9),
-          Expanded(
-            child: Text(
-              _error ??
-                  'Voice · ${((widget.attachment.durationMs ?? 0) / 1000).ceil()} giây',
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-          ),
-          StreamBuilder<Duration?>(
-            stream: _player.durationStream,
-            builder: (context, snapshot) => Text(
-              snapshot.data == null ? '' : _formatVoiceTime(snapshot.data!),
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ),
-          const SizedBox(width: 8),
-        ],
-      ),
-    ),
-  );
-}
-
-class _MemoryWaveSource extends StreamAudioSource {
-  _MemoryWaveSource(this._bytes);
-  final Uint8List _bytes;
-
-  @override
-  Future<StreamAudioResponse> request([int? start, int? end]) async {
-    final from = start ?? 0;
-    final to = end ?? _bytes.length;
-    return StreamAudioResponse(
-      sourceLength: _bytes.length,
-      contentLength: to - from,
-      offset: from,
-      stream: Stream.value(_bytes.sublist(from, to)),
-      contentType: 'audio/wav',
-      rangeRequestsSupported: true,
-    );
-  }
-}
-
-String _formatVoiceTime(Duration duration) {
-  final seconds = duration.inSeconds;
-  return '${(seconds ~/ 60).toString().padLeft(2, '0')}:${(seconds % 60).toString().padLeft(2, '0')}';
 }
 
 class _VideoSignalTracker extends StatefulWidget {
@@ -1408,6 +1416,7 @@ FeedPost _copy(FeedPost post, {bool? liked, bool? saved, int? likeCount}) =>
       handle: post.handle,
       displayName: post.displayName,
       body: post.body,
+      receiptId: post.receiptId,
       createdAt: post.createdAt,
       likeCount: likeCount ?? post.likeCount,
       replyCount: post.replyCount,
@@ -1444,6 +1453,8 @@ class _RepliesDialog extends StatefulWidget {
 
 class _RepliesDialogState extends State<_RepliesDialog> {
   final _text = TextEditingController();
+  late MediaPublication _publication = MediaPublication(widget.api);
+  String? _progress;
   List<FeedPost> _items = [];
   IonicMediaDraft _media = const IonicMediaDraft();
   Key _mediaComposerKey = UniqueKey();
@@ -1460,6 +1471,7 @@ class _RepliesDialogState extends State<_RepliesDialog> {
 
   @override
   void dispose() {
+    unawaited(_publication.dispose());
     _text.dispose();
     super.dispose();
   }
@@ -1486,21 +1498,19 @@ class _RepliesDialogState extends State<_RepliesDialog> {
       _sending = true;
       _error = null;
     });
-    final staged = <String>[];
     try {
-      for (final image in _media.images) {
-        staged.add(
-          (await widget.api.uploadAttachment(image, mediaType: 'image')).id,
-        );
-      }
-      final voice = _media.voice;
-      if (voice != null) {
-        staged.add(
-          (await widget.api.uploadAttachment(voice, mediaType: 'audio')).id,
-        );
-      }
-      await widget.api.createReply(widget.post.id, body, attachmentIds: staged);
+      final staged = await _publication.prepare(body, _media, (value) {
+        if (mounted) setState(() => _progress = value);
+      });
+      await widget.api.createReply(
+        widget.post.id,
+        body,
+        attachmentIds: staged,
+        clientPublishId: _publication.id,
+      );
       if (mounted) {
+        unawaited(_publication.dispose());
+        _publication = MediaPublication(widget.api);
         setState(() {
           _text.clear();
           _media = const IonicMediaDraft();
@@ -1509,13 +1519,6 @@ class _RepliesDialogState extends State<_RepliesDialog> {
       }
       await _load();
     } catch (error) {
-      for (final id in staged) {
-        try {
-          await widget.api.deleteStagedAttachment(id);
-        } catch (_) {
-          // Expired unattached records are cleaned up by the server.
-        }
-      }
       if (mounted) setState(() => _error = apiErrorText(error));
     } finally {
       if (mounted) setState(() => _sending = false);
@@ -1574,6 +1577,7 @@ class _RepliesDialogState extends State<_RepliesDialog> {
           const SizedBox(height: 12),
           TextField(
             controller: _text,
+            readOnly: _sending,
             maxLength: 500,
             minLines: 2,
             maxLines: 4,
@@ -1583,7 +1587,9 @@ class _RepliesDialogState extends State<_RepliesDialog> {
               counterText: '',
             ),
           ),
+          if (_sending && _progress != null) Text(_progress!),
           MediaComposerControls(
+            enabled: !_sending,
             key: _mediaComposerKey,
             onChanged: (value) => setState(() => _media = value),
             onBusyChanged: (value) => setState(() => _mediaBusy = value),
@@ -1762,7 +1768,7 @@ class _VideoScreenState extends State<VideoScreen> {
     }
   }
 
-  Future<String?> _caption() async => showDialog<String>(
+  Future<String?> _caption() async => showIonicDialog<String>(
     context: context,
     builder: (context) => const _VideoCaptionDialog(),
   );
@@ -1800,7 +1806,7 @@ class _VideoScreenState extends State<VideoScreen> {
       await widget.onAuthenticate(mode: 'login');
       return;
     }
-    final draft = await showDialog<_VideoDraft>(
+    final draft = await showIonicDialog<_VideoDraft>(
       context: context,
       barrierDismissible: false,
       builder: (context) => const _CameraCaptureDialog(),
@@ -2361,7 +2367,8 @@ class MessagesScreen extends StatefulWidget {
   State<MessagesScreen> createState() => _MessagesScreenState();
 }
 
-class _MessagesScreenState extends State<MessagesScreen> {
+class _MessagesScreenState extends State<MessagesScreen>
+    with WidgetsBindingObserver {
   final _message = TextEditingController();
   final _scroll = ScrollController();
   List<ApiConversation> _conversations = [];
@@ -2374,12 +2381,21 @@ class _MessagesScreenState extends State<MessagesScreen> {
   int _sessionEpoch = 0;
   int _messageRequest = 0;
   String? _error;
+  String? _olderCursor;
+  bool _loadingOlder = false;
+  String? _retryId;
+  String? _retryBody;
+  String? _partnerReadAt;
+  String? _partnerReadId;
+  bool _foreground = true;
 
   bool get _chatOpen =>
       widget.conversationId != null && widget.conversationId!.isNotEmpty;
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    if (_chatOpen && widget.user != null) _loadMessages();
     _loadConversations();
     _configurePoll();
   }
@@ -2397,12 +2413,21 @@ class _MessagesScreenState extends State<MessagesScreen> {
         _message.clear();
         _loadingInbox = false;
         _loadingMessages = false;
+        _starting = false;
       });
       _loadConversations();
     }
     if (oldWidget.conversationId != widget.conversationId ||
         oldWidget.user?.id != widget.user?.id) {
       _messageRequest++;
+      _message.clear();
+      _retryId = null;
+      _retryBody = null;
+      _olderCursor = null;
+      _partnerReadAt = null;
+      _partnerReadId = null;
+      _sending = false;
+      _loadingOlder = false;
       setState(() {
         _messages = [];
         _loadingMessages = false;
@@ -2415,19 +2440,75 @@ class _MessagesScreenState extends State<MessagesScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _poll?.cancel();
     _message.dispose();
     _scroll.dispose();
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _foreground = state == AppLifecycleState.resumed;
+    _configurePoll();
+    if (_foreground && widget.user != null) {
+      if (_chatOpen) {
+        _loadMessages();
+      } else {
+        _loadConversations();
+      }
+    }
+  }
+
   void _configurePoll() {
     _poll?.cancel();
-    if (_chatOpen && widget.user != null) {
-      _poll = Timer.periodic(
-        const Duration(seconds: 4),
-        (_) => _loadMessages(silent: true),
-      );
+    if (!_foreground || widget.user == null) return;
+    _poll = Timer.periodic(const Duration(seconds: 4), (_) {
+      if (_chatOpen) {
+        _loadMessages(silent: true);
+      } else if (!_loadingInbox) {
+        _loadConversations();
+      }
+    });
+  }
+
+  List<ApiMessage> _mergeMessages(List<ApiMessage> incoming) {
+    final byId = {
+      for (final m in _messages) m.id: m,
+      for (final m in incoming) m.id: m,
+    };
+    final items = byId.values.toList();
+    items.sort((a, b) {
+      final order = DateTime.parse(
+        a.createdAt,
+      ).compareTo(DateTime.parse(b.createdAt));
+      return order == 0 ? a.id.compareTo(b.id) : order;
+    });
+    return items;
+  }
+
+  Future<void> _loadOlder() async {
+    final cursor = _olderCursor, id = widget.conversationId;
+    if (cursor == null || id == null || _loadingOlder) return;
+    final epoch = _sessionEpoch;
+    setState(() => _loadingOlder = true);
+    try {
+      final page = await widget.api.messages(id, cursor: cursor);
+      if (!mounted || epoch != _sessionEpoch || widget.conversationId != id) {
+        return;
+      }
+      setState(() {
+        _messages = _mergeMessages(page.items);
+        _olderCursor = page.nextCursor;
+      });
+    } catch (error) {
+      if (mounted && epoch == _sessionEpoch && widget.conversationId == id) {
+        widget.onToast(apiErrorText(error));
+      }
+    } finally {
+      if (mounted && epoch == _sessionEpoch && widget.conversationId == id) {
+        setState(() => _loadingOlder = false);
+      }
     }
   }
 
@@ -2463,6 +2544,8 @@ class _MessagesScreenState extends State<MessagesScreen> {
     final epoch = _sessionEpoch;
     final userId = widget.user!.id;
     final request = ++_messageRequest;
+    final nearBottom = !_scroll.hasClients || _scroll.position.extentAfter < 80;
+    final initial = _messages.isEmpty;
     _loadingMessages = true;
     if (!silent) {
       setState(() {
@@ -2479,10 +2562,20 @@ class _MessagesScreenState extends State<MessagesScreen> {
         return;
       }
       setState(() {
-        _messages = result.items;
+        _messages = _mergeMessages(result.items);
+        if (initial) _olderCursor = result.nextCursor;
+        _partnerReadAt = result.partnerReadAt;
+        _partnerReadId = result.partnerReadMessageId;
         if (silent) _error = null;
       });
-      if (!silent && _scroll.hasClients) {
+      if (_foreground && result.items.isNotEmpty) {
+        unawaited(
+          widget.api
+              .markConversationRead(id, result.items.last.id)
+              .catchError((Object _) {}),
+        );
+      }
+      if (nearBottom) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (_scroll.hasClients) {
             _scroll.jumpTo(_scroll.position.maxScrollExtent);
@@ -2493,8 +2586,14 @@ class _MessagesScreenState extends State<MessagesScreen> {
       if (mounted &&
           epoch == _sessionEpoch &&
           widget.user?.id == userId &&
-          !silent) {
-        setState(() => _error = apiErrorText(error));
+          widget.conversationId == id) {
+        setState(() {
+          _error = apiErrorText(error);
+          if (error is IonicApiException &&
+              [401, 403, 404].contains(error.statusCode)) {
+            _messages = [];
+          }
+        });
       }
     } finally {
       if (request == _messageRequest) {
@@ -2514,7 +2613,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
       await widget.onAuthenticate(mode: 'login');
       return;
     }
-    final handle = await showDialog<String>(
+    final handle = await showIonicDialog<String>(
       context: context,
       builder: (context) => const _HandleDialog(),
     );
@@ -2546,21 +2645,26 @@ class _MessagesScreenState extends State<MessagesScreen> {
     if (id == null || id.isEmpty || body.isEmpty || _sending) return;
     final epoch = _sessionEpoch;
     final userId = widget.user!.id;
+    if (_retryBody != body) {
+      _retryId = IonicApi.newClientMessageId();
+      _retryBody = body;
+    }
     setState(() => _sending = true);
     try {
-      final message = await widget.api.sendMessage(
-        id,
-        body,
-        IonicApi.newClientMessageId(),
-      );
+      final message = await widget.api.sendMessage(id, body, _retryId!);
       if (!mounted ||
           epoch != _sessionEpoch ||
           widget.user?.id != userId ||
           widget.conversationId != id) {
         return;
       }
-      _message.clear();
-      setState(() => _messages = [..._messages, message]);
+      if (_message.text.trim() == body) _message.clear();
+      _retryId = null;
+      _retryBody = null;
+      setState(() {
+        _messages = _mergeMessages([message]);
+        _error = null;
+      });
       await _loadConversations();
       if (_scroll.hasClients) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -2578,6 +2682,16 @@ class _MessagesScreenState extends State<MessagesScreen> {
         setState(() => _sending = false);
       }
     }
+  }
+
+  bool _isRead(ApiMessage message) {
+    final read = _partnerReadAt;
+    if (read == null) return false;
+    final order = DateTime.parse(
+      message.createdAt,
+    ).compareTo(DateTime.parse(read));
+    return order < 0 ||
+        (order == 0 && message.id.compareTo(_partnerReadId ?? '') <= 0);
   }
 
   @override
@@ -2674,6 +2788,9 @@ class _MessagesScreenState extends State<MessagesScreen> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
+                trailing: conversation.unreadCount > 0
+                    ? Badge(label: Text('${conversation.unreadCount}'))
+                    : null,
                 onTap: () => widget.onConversation(
                   conversation.id,
                   conversation.partnerDisplayName,
@@ -2716,6 +2833,11 @@ class _MessagesScreenState extends State<MessagesScreen> {
         ),
       ),
       const Divider(height: 1),
+      if (_olderCursor != null)
+        TextButton(
+          onPressed: _loadingOlder ? null : _loadOlder,
+          child: Text(_loadingOlder ? 'Đang tải…' : 'Tin nhắn trước đó'),
+        ),
       if (_loadingMessages && _messages.isEmpty)
         const Expanded(child: Center(child: CircularProgressIndicator()))
       else if (_error != null && _messages.isEmpty)
@@ -2755,11 +2877,22 @@ class _MessagesScreenState extends State<MessagesScreen> {
                                 ).colorScheme.surfaceContainerHighest,
                           borderRadius: BorderRadius.circular(16),
                         ),
-                        child: Text(
-                          item.body,
-                          style: Theme.of(
-                            context,
-                          ).textTheme.bodyLarge?.copyWith(fontSize: 15),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              item.body,
+                              style: Theme.of(
+                                context,
+                              ).textTheme.bodyLarge?.copyWith(fontSize: 15),
+                            ),
+                            if (own)
+                              Text(
+                                _isRead(item) ? 'Đã đọc' : 'Đã gửi',
+                                style: Theme.of(context).textTheme.labelSmall,
+                              ),
+                          ],
                         ),
                       ),
                     );
@@ -2783,6 +2916,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
             Expanded(
               child: TextField(
                 controller: _message,
+                readOnly: _sending,
                 maxLength: 2000,
                 minLines: 1,
                 maxLines: 5,
@@ -2956,6 +3090,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               saved: item.saved,
               kind: item.kind,
               mimeType: item.mimeType,
+              attachments: item.attachments,
             ),
           )
           .toList(growable: false);
@@ -3015,7 +3150,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<void> _block() async {
     final profile = _profile;
     if (profile == null) return;
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showIonicDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: Text('Chặn @${profile.handle}?'),
@@ -3095,7 +3230,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _reply(FeedPost post) async {
-    await showDialog<void>(
+    await showIonicDialog<void>(
       context: context,
       builder: (context) =>
           _RepliesDialog(api: widget.api, post: post, onToast: widget.onToast),

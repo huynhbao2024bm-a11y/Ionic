@@ -43,10 +43,13 @@ void _validateConfig(RankerConfig config, int limit) {
   }
   if (!config.minimumPreferenceConfidence.isFinite ||
       !config.strongMatchThreshold.isFinite ||
+      !config.nonDiscriminativeLabelPrevalenceThreshold.isFinite ||
       config.minimumPreferenceConfidence < 0 ||
       config.minimumPreferenceConfidence > 1 ||
       config.strongMatchThreshold <= 0 ||
-      config.strongMatchThreshold > 1) {
+      config.strongMatchThreshold > 1 ||
+      config.nonDiscriminativeLabelPrevalenceThreshold <= 0 ||
+      config.nonDiscriminativeLabelPrevalenceThreshold > 1) {
     throw RangeError(
       'Ranker confidence and match thresholds must be between 0 and 1.',
     );
@@ -81,7 +84,8 @@ class _PreparedProfile {
   const _PreparedProfile({
     required this.explicitInterestKeys,
     required this.preferencesByKey,
-    required this.positivePreferenceLabelIds,
+    required this.positiveTopicLabelIds,
+    required this.nonDiscriminativeLabelKeys,
     required this.followingCreatorIds,
     required this.blockedCreatorIds,
     required this.mutedCreatorIds,
@@ -97,7 +101,8 @@ class _PreparedProfile {
 
   final Set<String> explicitInterestKeys;
   final Map<String, PreferenceFeature> preferencesByKey;
-  final List<String> positivePreferenceLabelIds;
+  final Set<String> positiveTopicLabelIds;
+  final Set<String> nonDiscriminativeLabelKeys;
   final Set<String> followingCreatorIds;
   final Set<String> blockedCreatorIds;
   final Set<String> mutedCreatorIds;
@@ -117,6 +122,7 @@ void _incrementCount(Map<String, int> counts, String key) {
 
 _PreparedProfile _prepareProfile(ViewerProfile profile, RankerConfig config) {
   final explicitInterestKeys = <String>{};
+  final positiveTopicLabelIds = <String>{};
   for (final interest in profile.explicitInterests) {
     if (interest.labelId.trim().isEmpty ||
         !_labelDimensions.contains(interest.dimension)) {
@@ -132,6 +138,9 @@ _PreparedProfile _prepareProfile(ViewerProfile profile, RankerConfig config) {
     explicitInterestKeys.add(
       _labelKey(interest.taxonomyVersion, interest.dimension, interest.labelId),
     );
+    if (interest.dimension == LabelDimension.topic) {
+      positiveTopicLabelIds.add(interest.labelId);
+    }
   }
 
   Set<String> indexControls(List<TaxonomyLabelRef> controls) {
@@ -158,7 +167,6 @@ _PreparedProfile _prepareProfile(ViewerProfile profile, RankerConfig config) {
   final hiddenLabelKeys = indexControls(profile.hiddenLabels);
   final lessLikeLabelKeys = indexControls(profile.lessLikeLabels);
   final preferencesByKey = <String, PreferenceFeature>{};
-  final positivePreferenceLabelIds = <String>{};
   for (final feature in profile.preferences) {
     if (!feature.score.isFinite ||
         feature.score < -1 ||
@@ -211,9 +219,10 @@ _PreparedProfile _prepareProfile(ViewerProfile profile, RankerConfig config) {
       expiresAtMs: feature.expiresAtMs,
     );
     preferencesByKey[key] = currentFeature;
-    if (currentFeature.score > 0 &&
+    if (feature.dimension == LabelDimension.topic &&
+        currentFeature.score > 0 &&
         currentFeature.confidence >= config.minimumPreferenceConfidence) {
-      positivePreferenceLabelIds.add(feature.labelId);
+      positiveTopicLabelIds.add(feature.labelId);
     }
   }
 
@@ -247,7 +256,8 @@ _PreparedProfile _prepareProfile(ViewerProfile profile, RankerConfig config) {
   return _PreparedProfile(
     explicitInterestKeys: explicitInterestKeys,
     preferencesByKey: preferencesByKey,
-    positivePreferenceLabelIds: positivePreferenceLabelIds.toList(),
+    positiveTopicLabelIds: positiveTopicLabelIds,
+    nonDiscriminativeLabelKeys: <String>{},
     followingCreatorIds: profile.followingCreatorIds.toSet(),
     blockedCreatorIds: profile.blockedCreatorIds.toSet(),
     mutedCreatorIds: profile.mutedCreatorIds.toSet(),
@@ -275,6 +285,7 @@ double _labelMatchScore(
       continue;
     }
     final key = _labelKey(config.taxonomyVersion, dimension, label.labelId);
+    if (profile.nonDiscriminativeLabelKeys.contains(key)) continue;
     if (profile.explicitInterestKeys.contains(key)) {
       best = math.max(best, label.confidence);
       continue;
@@ -299,6 +310,9 @@ bool _hasExplicitMatch(
 ) => candidate.labels.any(
   (label) =>
       !_labelIsControlled(label, profile.lessLikeLabelKeys) &&
+      !profile.nonDiscriminativeLabelKeys.contains(
+        _labelKey(config.taxonomyVersion, label.dimension, label.labelId),
+      ) &&
       profile.explicitInterestKeys.contains(
         _labelKey(config.taxonomyVersion, label.dimension, label.labelId),
       ),
@@ -340,12 +354,13 @@ double _negativePreferenceScore(
       );
       continue;
     }
-    final feature =
-        profile.preferencesByKey[_labelKey(
-          config.taxonomyVersion,
-          label.dimension,
-          label.labelId,
-        )];
+    final key = _labelKey(
+      config.taxonomyVersion,
+      label.dimension,
+      label.labelId,
+    );
+    if (profile.nonDiscriminativeLabelKeys.contains(key)) continue;
+    final feature = profile.preferencesByKey[key];
     if (feature != null &&
         feature.score < 0 &&
         feature.confidence >= config.minimumPreferenceConfidence) {
@@ -363,21 +378,36 @@ bool _hasAdjacentMatch(
   _PreparedProfile profile,
   RankerConfig config,
 ) => candidate.labels.any((candidateLabel) {
-  if ((candidateLabel.dimension != LabelDimension.topic &&
-          candidateLabel.dimension != LabelDimension.format) ||
-      _labelIsControlled(candidateLabel, profile.lessLikeLabelKeys)) {
+  final candidateKey = _labelKey(
+    config.taxonomyVersion,
+    candidateLabel.dimension,
+    candidateLabel.labelId,
+  );
+  if (candidateLabel.dimension != LabelDimension.topic ||
+      _labelIsControlled(candidateLabel, profile.lessLikeLabelKeys) ||
+      profile.nonDiscriminativeLabelKeys.contains(candidateKey)) {
     return false;
   }
   final candidateNeighbors =
       config.adjacentLabels[candidateLabel.labelId] ?? const <String>[];
-  return profile.positivePreferenceLabelIds.any((preferredLabel) {
-    final preferredFeature =
-        profile.preferencesByKey[_labelKey(
-          config.taxonomyVersion,
-          candidateLabel.dimension,
-          preferredLabel,
-        )];
-    if (preferredFeature == null) return false;
+  return profile.positiveTopicLabelIds.any((preferredLabel) {
+    final preferredKey = _labelKey(
+      config.taxonomyVersion,
+      LabelDimension.topic,
+      preferredLabel,
+    );
+    if (profile.lessLikeLabelKeys.contains(preferredKey)) return false;
+    if (profile.nonDiscriminativeLabelKeys.contains(preferredKey)) return false;
+    final preferredFeature = profile.preferencesByKey[preferredKey];
+    final explicitPreference = profile.explicitInterestKeys.contains(
+      preferredKey,
+    );
+    if (!explicitPreference &&
+        (preferredFeature == null ||
+            preferredFeature.score <= 0 ||
+            preferredFeature.confidence < config.minimumPreferenceConfidence)) {
+      return false;
+    }
     final preferredNeighbors =
         config.adjacentLabels[preferredLabel] ?? const <String>[];
     return candidateNeighbors.contains(preferredLabel) ||
@@ -415,6 +445,16 @@ bool _hasAdjacentMatch(
     );
   }
   if (_hasAdjacentMatch(candidate, profile, config)) {
+    return (
+      tier: RelevanceTier.adjacent,
+      reasonCode: RecommendationReasonCode.adjacent_topic,
+    );
+  }
+  if (candidate.semanticAffinity > 0 &&
+      candidate.semanticAversion == 0 &&
+      !candidate.labels.any(
+        (label) => _labelIsControlled(label, profile.lessLikeLabelKeys),
+      )) {
     return (
       tier: RelevanceTier.adjacent,
       reasonCode: RecommendationReasonCode.adjacent_topic,
@@ -507,7 +547,9 @@ double _scoreCandidate(
   return weightedTotal / availableWeight -
       config.weights.negativePreference *
           (components['negativePreference'] ?? 0) -
-      config.weights.repetition * (components['repetition'] ?? 0);
+      config.weights.repetition * (components['repetition'] ?? 0) +
+      .12 * candidate.semanticAffinity -
+      .18 * candidate.semanticAversion;
 }
 
 String? _primaryTopic(FeedCandidate candidate) {
@@ -632,6 +674,14 @@ List<RankedCandidate> _diversify(
 }
 
 void _validateCandidate(FeedCandidate candidate, String taxonomyVersion) {
+  for (final value in [
+    candidate.semanticAffinity,
+    candidate.semanticAversion,
+  ]) {
+    if (!value.isFinite || value < 0 || value > 1) {
+      throw RangeError('Invalid semantic evidence score.');
+    }
+  }
   if (candidate.id.trim().isEmpty ||
       candidate.creatorId.trim().isEmpty ||
       !candidate.publishedAtMs.isFinite ||
@@ -685,15 +735,65 @@ List<RankedCandidate> rankCandidates(
   List<FeedCandidate> candidates,
   ViewerProfile profile,
   RankerConfig config,
-  int limit,
-) {
+  int limit, {
+  bool diversify = true,
+  bool deduplicateGroups = true,
+}) {
   _validateConfig(config, limit);
-  final preparedProfile = _prepareProfile(profile, config);
-  final hasLearnedNegativePreference = preparedProfile.preferencesByKey.values
+  final eligibilityProfile = _prepareProfile(profile, config);
+  for (final candidate in candidates) {
+    _validateCandidate(candidate, config.taxonomyVersion);
+  }
+  if (limit == 0) return const [];
+
+  final eligible = candidates
+      .where((candidate) {
+        if (!candidate.eligible ||
+            !candidate.visibleToViewer ||
+            eligibilityProfile.blockedCreatorIds.contains(
+              candidate.creatorId,
+            ) ||
+            eligibilityProfile.mutedCreatorIds.contains(candidate.creatorId) ||
+            eligibilityProfile.hiddenContentIds.contains(candidate.id) ||
+            eligibilityProfile.recentExposureContentIds.contains(
+              candidate.id,
+            ) ||
+            candidate.labels.any(
+              (label) =>
+                  _labelIsControlled(label, eligibilityProfile.hiddenLabelKeys),
+            )) {
+          return false;
+        }
+        return true;
+      })
+      .toList(growable: false);
+
+  final labelCoverage = <String, int>{};
+  for (final candidate in eligible) {
+    for (final label in candidate.labels) {
+      final key = _labelKey(
+        label.taxonomyVersion,
+        label.dimension,
+        label.labelId,
+      );
+      _incrementCount(labelCoverage, key);
+    }
+  }
+  final nonDiscriminativeLabelKeys = {
+    for (final entry in labelCoverage.entries)
+      if (entry.value / eligible.length >=
+          config.nonDiscriminativeLabelPrevalenceThreshold)
+        entry.key,
+  };
+  final preparedProfile = eligibilityProfile
+    ..nonDiscriminativeLabelKeys.addAll(nonDiscriminativeLabelKeys)
+    ..lessLikeLabelKeys.removeAll(nonDiscriminativeLabelKeys);
+  final hasLearnedNegativePreference = preparedProfile.preferencesByKey.entries
       .any(
-        (feature) =>
-            feature.score < 0 &&
-            feature.confidence >= config.minimumPreferenceConfidence,
+        (entry) =>
+            !nonDiscriminativeLabelKeys.contains(entry.key) &&
+            entry.value.score < 0 &&
+            entry.value.confidence >= config.minimumPreferenceConfidence,
       );
   if ((preparedProfile.lessLikeLabelKeys.isNotEmpty ||
           hasLearnedNegativePreference) &&
@@ -702,25 +802,6 @@ List<RankedCandidate> rankCandidates(
       'Negative preference weight must be positive when the viewer has negative preferences.',
     );
   }
-  for (final candidate in candidates) {
-    _validateCandidate(candidate, config.taxonomyVersion);
-  }
-  if (limit == 0) return const [];
-
-  final eligible = candidates.where((candidate) {
-    if (!candidate.eligible ||
-        !candidate.visibleToViewer ||
-        preparedProfile.blockedCreatorIds.contains(candidate.creatorId) ||
-        preparedProfile.mutedCreatorIds.contains(candidate.creatorId) ||
-        preparedProfile.hiddenContentIds.contains(candidate.id) ||
-        preparedProfile.recentExposureContentIds.contains(candidate.id) ||
-        candidate.labels.any(
-          (label) => _labelIsControlled(label, preparedProfile.hiddenLabelKeys),
-        )) {
-      return false;
-    }
-    return true;
-  });
 
   final ranked = <RankedCandidate>[];
   for (final candidate in eligible) {
@@ -743,9 +824,12 @@ List<RankedCandidate> rankCandidates(
     final candidate = item.candidate;
     if (!seenContentIds.add(candidate.id)) return false;
     final duplicateGroupId = candidate.duplicateGroupId;
-    return duplicateGroupId == null ||
+    return !deduplicateGroups ||
+        duplicateGroupId == null ||
         seenDuplicateGroups.add(duplicateGroupId);
   }).toList();
 
-  return _diversify(deduplicated, limit, config);
+  return diversify
+      ? _diversify(deduplicated, limit, config)
+      : deduplicated.take(limit).toList();
 }

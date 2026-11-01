@@ -5,6 +5,8 @@ import 'package:ionic_server/src/modules/recommendation/ranker_config.dart';
 import 'package:ionic_server/src/modules/recommendation/types.dart';
 import 'package:postgres/postgres.dart';
 
+import 'preference_evidence.dart';
+
 const _defaultSignalWeights = <PreferenceSignalKind, double>{
   PreferenceSignalKind.like: 0.18,
   PreferenceSignalKind.unlike: -0.12,
@@ -83,6 +85,15 @@ class RecommendationSignalsService {
   }) async {
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch.toDouble();
     final policy = _updatePolicy(now);
+    if (const {
+      PreferenceSignalKind.like,
+      PreferenceSignalKind.unlike,
+      PreferenceSignalKind.save,
+      PreferenceSignalKind.unsave,
+    }.contains(kind)) {
+      await _recordReversible(transaction, userId, contentId, kind, policy);
+      return;
+    }
     if (policy.signalWeights[kind] == 0) return;
 
     await transaction.execute(
@@ -118,7 +129,7 @@ class RecommendationSignalsService {
           '$actionId:${kind.name}:${dimension.name}:$labelId';
       final existingResult = await transaction.execute(
         r'''SELECT score, confidence, source_summary, updated_at, expires_at
-            FROM user_preference_feature
+            FROM user_preference_baseline
             WHERE user_id = $1 AND taxonomy_version = $2 AND dimension = $3 AND label_id = $4''',
         parameters: [userId, taxonomyVersion, dimension.name, labelId],
       );
@@ -165,7 +176,7 @@ class RecommendationSignalsService {
       if (updated == null) continue;
 
       await transaction.execute(
-        r'''INSERT INTO user_preference_feature
+        r'''INSERT INTO user_preference_baseline
              (user_id, taxonomy_version, dimension, label_id, score, confidence, source_summary, updated_at, expires_at)
            VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8 / 1000.0), to_timestamp($9 / 1000.0))
            ON CONFLICT (user_id, taxonomy_version, dimension, label_id)
@@ -185,5 +196,72 @@ class RecommendationSignalsService {
         ],
       );
     }
+    // Deferred video/other legacy signals own only their baseline contribution;
+    // never fold reversible text evidence into a non-reversible aggregate.
+    await PreferenceEvidenceService().rebuild(
+      transaction,
+      userId,
+      policy.halfLifeMs,
+    );
+    await transaction.execute(
+      r'UPDATE recommendation_post_distribution SET dirty=true WHERE content_id=$1',
+      parameters: [contentId],
+    );
+  }
+
+  Future<void> _recordReversible(
+    TxSession tx,
+    String userId,
+    String contentId,
+    PreferenceSignalKind kind,
+    PreferenceUpdatePolicy policy,
+  ) async {
+    await lockPreference(tx, userId);
+    final undo =
+        kind == PreferenceSignalKind.unlike ||
+        kind == PreferenceSignalKind.unsave;
+    final source =
+        kind == PreferenceSignalKind.like || kind == PreferenceSignalKind.unlike
+        ? 'like'
+        : 'save';
+    final setting = await tx.execute(
+      r'SELECT learning_paused FROM user_recommendation_setting WHERE user_id=$1',
+      parameters: [userId],
+    );
+    if (!undo && setting.first.first == true) return;
+    await tx.execute(
+      r'DELETE FROM user_preference_evidence WHERE user_id=$1 AND content_id=$2 AND kind=$3',
+      parameters: [userId, contentId, source],
+    );
+    if (!undo) {
+      final weight = policy.signalWeights[kind] ?? 0;
+      if (weight < 0) {
+        throw StateError('Like/save evidence weights must be non-negative.');
+      }
+      final taxonomy = Platform.environment['RECOMMENDATION_TAXONOMY_VERSION']
+          ?.trim();
+      await tx.execute(
+        r'''INSERT INTO user_preference_evidence
+        (user_id,content_id,kind,taxonomy_version,dimension,label_id,contribution,confidence,source_updated_at,occurred_at,expires_at)
+        SELECT $1,c.id,$3,l.taxonomy_version,l.dimension,l.label_id,$4::real*l.confidence,l.confidence,
+          c.updated_at,now(),now()+($5::double precision*interval '1 millisecond')
+        FROM content c JOIN content_label l ON l.content_id=c.id
+        WHERE c.id=$2 AND l.status='active' AND l.taxonomy_version=$6
+          AND c.status='published' AND c.deleted_at IS NULL AND c.visibility='public' AND $4::real>0 ''',
+        parameters: [
+          userId,
+          contentId,
+          source,
+          weight,
+          policy.expiryAfterMs,
+          taxonomy == null || taxonomy.isEmpty ? 'ionic-taxonomy-v1' : taxonomy,
+        ],
+      );
+    }
+    await PreferenceEvidenceService().rebuild(tx, userId, policy.halfLifeMs);
+    await tx.execute(
+      r'UPDATE recommendation_post_distribution SET dirty=true WHERE content_id=$1',
+      parameters: [contentId],
+    );
   }
 }

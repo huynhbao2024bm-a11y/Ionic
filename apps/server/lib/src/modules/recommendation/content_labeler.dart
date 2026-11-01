@@ -62,8 +62,14 @@ const _sourcePriority = <LabelSource, int>{
 
 const _labelDimensions = LabelDimension.values;
 
-List<String> _tokenize(String value) {
-  final normalized = unorm.nfkc(value).toLowerCase();
+List<String> _tokenize(String value, {bool foldDiacritics = false}) {
+  var normalized = unorm.nfkc(value).toLowerCase();
+  if (foldDiacritics) {
+    normalized = unorm
+        .nfd(normalized)
+        .replaceAll(RegExp(r'\p{M}+', unicode: true), '')
+        .replaceAll('đ', 'd');
+  }
   return RegExp(r'[\p{L}\p{M}\p{N}]+', unicode: true)
       .allMatches(normalized)
       .map((match) => match.group(0)!)
@@ -96,11 +102,15 @@ List<LabelProposal> suggestLabelsFromText(
   List<KeywordRule> rules,
 ) {
   final tokens = _tokenize(text);
+  final foldedTokens = _tokenize(text, foldDiacritics: true);
   final proposals = <LabelProposal>[];
 
   for (final rule in rules) {
     _validateConfidence(rule.confidence);
-    final normalizedTerms = rule.terms.map(_tokenize).toList(growable: false);
+    final fold = rule.dimension != LabelDimension.language;
+    final normalizedTerms = rule.terms
+        .map((term) => _tokenize(term, foldDiacritics: fold))
+        .toList(growable: false);
     final normalizedKeys = normalizedTerms.map(jsonEncode).toSet();
     final minimumMatches = rule.minimumMatches;
     if (normalizedTerms.isEmpty ||
@@ -115,7 +125,10 @@ List<LabelProposal> suggestLabelsFromText(
     }
 
     final matchedTerms = normalizedTerms
-        .where((termTokens) => _containsTokens(tokens, termTokens))
+        .where(
+          (termTokens) =>
+              _containsTokens(fold ? foldedTokens : tokens, termTokens),
+        )
         .length;
     if (matchedTerms >= minimumMatches) {
       proposals.add(

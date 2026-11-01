@@ -17,6 +17,9 @@ coverage/
 .flutter-plugins
 .flutter-plugins-dependencies
 .pub-cache/
+.ml-runtime/
+.models/
+__pycache__/
 .nx/
 .turbo/
 
@@ -41,3 +44,12 @@ ios/Runner/GeneratedPluginRegistrant.*
 playwright-report/
 test-results/
 *.local
+
+# Product documents stay on this workstation at the owner's request.
+/docs/
+/.agents/
+/.codex/
+/.aws/
+*.jks
+*.keystore
+*.p12

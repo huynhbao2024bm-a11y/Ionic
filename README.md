@@ -1,62 +1,47 @@
 # Ionic
 
-Ionic is a Flutter social app project focused first on reading and publishing text posts, with accounts, profiles, social connections, private messaging, and a relevance-ranked feed. The product and engineering baseline is documented in [`docs/`](docs/), and implementation follows the staged roadmap there.
+Flutter app and Dart API for text posts, photo/voice attachments, profiles, account settings and private messages. Android is the first native target; short video is deferred.
 
-## Product direction
+## Source
 
-- **Home:** a readable text timeline with replies and clear follow and interaction controls. Signed-out visitors can read real public posts.
-- **Publishing:** text posts and replies support optional optimized photos or a short voice recording. The first local Flutter/Dart implementation is in place; production storage, abuse controls, and full runtime verification remain open.
-- **Profiles and connections:** public-facing profiles, follows, and account controls.
-- **Messages:** a separate private one-to-one conversation experience.
-- **Recommendations:** label text posts, build a revisable profile of topic interests, and rank by relevance, freshness, safety, and variety. Internal labels and reasons stay out of the interface.
-- **Appearance:** charcoal dark mode by default; light mode is a device-local setting.
+- `apps/client`: Flutter Android/iOS/Web client.
+- `apps/server`: active Dart/Shelf API, tests and recommendation code.
+- `apps/api/migrations`: shared, checksum-verified PostgreSQL migrations.
+- `apps/api` and `apps/web`: earlier server/web references.
+- `infra`: database container and public Supabase CA certificate.
 
-Short video is deferred from the first release and excluded from its main navigation and text-feed ranking. It remains documented as a later phase after processing, moderation, storage, and cost controls are ready.
+Product documents remain local under `docs/` and are intentionally excluded from the published branch. No private configuration, credentials, customer records, build output or model weights belong in this repository.
 
-The product takes interaction patterns as references: a concise social timeline, familiar profiles and chat, and vertical video discovery. It does not depend on copying another product's exact screens or rules.
+## Local development
 
-## Design documents
+Use Flutter 3.47.8 / Dart 3.13.7, Node for the Web preview, and PostgreSQL 17 with pgvector.
 
-| Document | Purpose |
-| --- | --- |
-| [`AGENTS.md`](AGENTS.md) | Mandatory project constraints for AI coding agents and contributors. |
-| [`docs/PRODUCT_REQUIREMENTS.md`](docs/PRODUCT_REQUIREMENTS.md) | Product scope, user journeys, functional requirements, and acceptance criteria. |
-| [`docs/UX_UI_SPEC.md`](docs/UX_UI_SPEC.md) | Code-first responsive Flutter layouts and interactions. |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System boundaries, deployment shape, and key flows. |
-| [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md) | Core entities, relationships, retention, and event contracts. |
-| [`docs/RECOMMENDATION_SYSTEM.md`](docs/RECOMMENDATION_SYSTEM.md) | Signals, content labels, ranking, the 3–5–10–25 progression, and diversity controls. |
-| [`docs/SECURITY_PRIVACY.md`](docs/SECURITY_PRIVACY.md) | Privacy, security, moderation, and abuse-prevention requirements. |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Phased delivery plan and release gates. |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Recorded design decisions and assumptions to revisit. |
-| [`docs/PROJECT_ASSESSMENT.md`](docs/PROJECT_ASSESSMENT.md) | Dated evidence snapshot, known gaps, and rules against overstating readiness. |
+1. Start PostgreSQL: `docker compose -f compose.dev.yaml up -d db`.
+2. In `apps/server`, configure a local `DATABASE_URL`, run `dart pub get`, `dart run bin/migrate.dart`, then `dart run lib/main.dart`.
+3. In `apps/client`, run `flutter pub get`, then `node tool/run_dev.mjs`. The local preview proxies API traffic to port 3001.
+4. For an emulator: `flutter run --dart-define=API_BASE_URL=http://10.0.2.2:3001/api/v1`. A phone build requires the deployed HTTPS API instead.
 
-## Current implementation
+Safe example values are in `apps/server/.env.example`; local no-TLS PostgreSQL is only for development.
 
-The recommendation core has been ported to Dart in `apps/server/lib/src/modules/recommendation`; the current For You source is text-only. The Dart server has health/auth/feed/post/profile/message/report route source, while local video source remains a deferred, owner-only preview path. Post labels and like/save preference updates are persisted; internal labels stay out of the interface. A narrow Flutter Android flow was previously verified against Dart and local PostgreSQL: sign-in, session restore after app restart, For You response, and text-post publish/readback. The current media path now has Flutter/Dart source, migration 0012 applied locally, successful Web/APK builds, and database readiness; image/voice create-read flows have not been exercised end to end. The NestJS implementation remains the parity reference while other Dart routes and ranking-feedback behavior are checked. PostgreSQL migrations 0001–0012 are the shared schema contract. Staffed report review, production media storage/lifecycle, and real-device performance review are not implemented or verified. Keep `apps/api` and `apps/web` until the Dart server and Flutter app pass route parity and core signed-in flows.
+## Cloud preview
 
-## Run the client
+Build from repository root with `docker build -t ionic-api:preview .`. The Docker image contains native Linux API/maintenance executables and migrations; it runs as a non-root user. Render supplies `PORT`; the API listens on `0.0.0.0`.
 
-Start PostgreSQL with `docker compose -f compose.dev.yaml up -d db` from the project root. For the existing NestJS reference API, run `npm run migrate`, `npm run build`, and `npm start` from `apps/api`. For the Dart target, run `dart run bin/migrate.dart` and `dart run lib/main.dart` from `apps/server` with `DATABASE_URL` set; its default port is 3001. Flutter Web runs from `apps/client` with `flutter pub get` and `node tool/run_dev.mjs`; the same-origin proxy defaults to Dart on port 3001 and accepts `IONIC_API_PORT=3000` for NestJS. The Android debug build targets Dart at `10.0.2.2:3001` by default when passed `--dart-define=API_BASE_URL=http://10.0.2.2:3001/api/v1`. A physical Android device needs the development machine's reachable LAN address. Release builds must use an HTTPS API URL. iOS scaffolding exists but compiling/signing requires macOS with Xcode. Keep `apps/api` and `apps/web` until remaining route parity and signed-in journeys pass. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the active gates.
+Configure these only in the server's environment:
 
-## Target technology baseline
+- `DATABASE_URL`: the dedicated Ionic role/session-pooler URL, `sslmode=verify-full`, and `sslrootcert=/app/infra/supabase/prod-ca-2021.crt`.
+- `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `IONIC_STORAGE_BUCKET=ionic-media`: private cloud storage. The server key never belongs in Flutter.
+- `IONIC_ATTACHMENT_STORAGE=supabase`, `APP_ENV=production`, `ALLOW_SIGNUP=true` for the intended controlled preview.
+- `RECOMMENDATION_ADAPTIVE_ENABLED=true`, `RECOMMENDATION_MIN_RANDOM_SHARE=0.40`.
+- The owner-selected free preview sets `RECOMMENDATION_SEMANTIC_ENABLED=false`; local-model semantics needs separate compute before enabling online.
+- `WEB_ORIGINS`: only intended browser origins, when hosting a Web client.
 
-- Client: Flutter native app, Android first and iOS next; responsive Web PWA remains supported. Android/iOS readiness is tracked separately from Web build success.
-- API/server: Dart modular monolith using Shelf and shelf_router; NestJS stays as a parity reference during migration.
-- Primary data store: PostgreSQL.
-- Cache and short-lived coordination: Redis when required by load or feature needs.
-- Media: local photo/voice staging and parent-authorized delivery are implemented for development; production requires private object storage, limits, rate controls, deletion cleanup, and moderation operations. Short-video processing remains a later phase. The current local video preview uses `.data/media` and must not be exposed publicly.
-- Initial topology: a modular monolith with explicit module boundaries; split services only when measured operational needs justify it.
+Apply migrations before starting the service. Check `GET /api/v1/health/ready`; a successful build alone does not prove a working database or object store. Validate actual upload/read/delete and account flows before distributing the preview.
 
-The client and server migration is in progress, not a claim of API parity or deployed infrastructure. Add infrastructure only when a project phase needs it.
+The preview has single-process request budgets and bounded upload processing. These do not replace full abuse prevention, moderation operations, backup/restore or a production signing/release review. Free hosting can sleep and require a cold start.
 
-## Git
+## Verification
 
-The repository uses `main` as its initial branch. Configure your Git author identity before creating commits:
+From `apps/server`: `dart analyze`, `dart run bin/verify_attachment_storage.dart`, `dart run bin/verify_preview_limits.dart`, `dart run bin/verify_migration_checksum.dart`. Database suites explicitly require separate empty verification databases and remove their synthetic fixtures.
 
-```powershell
-git config user.name "Your Name"
-git config user.email "you@example.com"
-git status
-```
-
-See [`AGENTS.md`](AGENTS.md) before making implementation changes.
+From `apps/client`: `flutter analyze`, `flutter test`, and native integration tests on an Android device/emulator. Build a phone preview with `flutter build apk --release --split-per-abi --dart-define=API_BASE_URL=https://your-api.example/api/v1`. Current release configuration uses the local debug signing key; it is a preview build, not Play Store distribution.

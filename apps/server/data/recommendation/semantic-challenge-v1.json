@@ -1,0 +1,18 @@
+{
+  "version": "semantic-challenge-v1",
+  "source": "AI-authored synthetic semantic contrasts; independent human review pending; do not tune thresholds to these cases",
+  "cases": [
+    {"id":"clay", "seed":"Tôi đang tập biến những cục đất mềm thành chiếc cốc có quai.", "related":"Các bước tạo dáng và nung đồ gốm thủ công.", "unrelated":"Kết quả trận bóng đá tối qua."},
+    {"id":"poem", "seed":"Tôi thử ghép vài câu ngắn có vần để kể về một cơn mưa.", "related":"Nhịp điệu và hình ảnh trong sáng tác thơ.", "unrelated":"Cách thay bàn phím máy tính."},
+    {"id":"night-photo", "seed":"Những tấm hình phố đêm của tôi bị nhòe và quá tối.", "related":"Chọn tốc độ màn trập và khẩu độ khi chụp ảnh thiếu sáng.", "unrelated":"Công thức làm bánh mì nguyên cám."},
+    {"id":"bread", "seed":"Khối bột ủ qua đêm có nhiều bọt khí nhưng khi nướng lại bị xẹp.", "related":"Điều chỉnh men và nhiệt độ để bánh mì nở đều.", "unrelated":"Tập chuyền bóng trong một trận bóng rổ."},
+    {"id":"layout", "seed":"Các ô trên màn hình điện thoại bị tràn khi người dùng tăng cỡ chữ.", "related":"Thiết kế bố cục responsive và kiểm tra accessibility cho ứng dụng.", "unrelated":"Cách chăm mèo con sau khi đón về nhà."},
+    {"id":"trail", "seed":"Tôi muốn đi bộ vài ngày qua những ngọn núi và ngủ trong lều.", "related":"Chuẩn bị hành trang cho chuyến trekking và cắm trại.", "unrelated":"Cách phối hợp hợp âm trên đàn piano."},
+    {"id":"stars", "seed":"Làm sao nhìn rõ những chấm sáng rất xa trên bầu trời ban đêm?", "related":"Chọn kính thiên văn để quan sát các hành tinh.", "unrelated":"Cách ướp thịt để món ăn đậm vị."},
+    {"id":"bonsai", "seed":"Tôi muốn uốn một cây nhỏ để tán lá có dáng cân đối.", "related":"Tỉa cành và tạo thế cho cây bonsai.", "unrelated":"Các chiến thuật mở màn trong trò chơi điện tử."},
+    {"id":"piano", "seed":"Tôi muốn hai bàn tay chơi những giai điệu khác nhau trên hàng phím đen trắng.", "related":"Bài luyện phối hợp hai tay khi học đàn piano.", "unrelated":"Mẹo bố trí ánh sáng khi chụp ảnh chân dung."},
+    {"id":"racket", "seed":"Tôi thường đỡ hỏng những quả bóng nhỏ xoáy mạnh trên mặt bàn.", "related":"Kỹ thuật nhận biết xoáy và trả giao bóng trong bóng bàn.", "unrelated":"Phân tích nhân vật trong một cuốn tiểu thuyết."},
+    {"id":"cat", "seed":"Bạn nhỏ bốn chân của tôi cứ cào ghế và chạy quanh nhà lúc nửa đêm.", "related":"Đồ chơi và trụ cào giúp mèo giải tỏa năng lượng.", "unrelated":"Hướng dẫn chọn ống kính góc rộng."},
+    {"id":"virtual-world", "seed":"Tôi đang xây một ngôi nhà trong thế giới ảo và thu thập vật liệu.", "related":"Mẹo sinh tồn và xây dựng trong game thế giới mở.", "unrelated":"Quy trình ủ bột làm bánh mì."}
+  ]
+}

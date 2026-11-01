@@ -1,5 +1,11 @@
 # Ionic Dart server
 
+Latest local recommendation slice: optional v8 adds owned coarse foreground attention, reader topic pacing, distinct-reader post audience opportunities and stable issued-page retries, retaining the 40% random floor. Apply migrations through 0017 before `RECOMMENDATION_ADAPTIVE_ENABLED=true`; `.env.example` records provisional controls. The API starts bounded minute expiry cleanup; scale-to-zero hosting needs a scheduled runner and retention monitoring. Use [verification](../../docs/VERIFY_RECOMMENDATION.md) and [actual status/limits](../../docs/PROJECT_ASSESSMENT.md), not historical sections below, for current evidence. Disabling the flag retains the verified v7 path and requests a typed cursor refresh.
+
+Recommendation v7 enforces the owner-confirmed minimum 40% creator-balanced random selections on every signed-in Home page, independent of positive-interest scores. `RECOMMENDATION_MIN_RANDOM_SHARE` defaults to 0.40 and can only increase. No schema/client update is needed; old cursors refresh through `FEED_CURSOR_STALE`. See the canonical contract in `RECOMMENDATION_SYSTEM.md` §13 and verification commands in [`VERIFY_RECOMMENDATION.md`](../../docs/VERIFY_RECOMMENDATION.md). v6 semantics/evidence remain in use beneath the final mixer.
+
+Recommendation v6 adds optional frozen local multilingual text matching and reversible like/save evidence. Serving remains Dart; a bounded offline Python/ONNX worker computes public-text vectors. PostgreSQL needs pgvector plus migrations 0014/0015. The development image preserves the previous PostgreSQL major/base and volume. Preparation, tests, timings, fallback and cleanup are documented in [`VERIFY_RECOMMENDATION.md`](../../docs/VERIFY_RECOMMENDATION.md); semantic serving defaults off. Models/runtime are outside Git and Flutter bundles. Human relevance/public-release readiness is not established by synthetic checks.
+
 This is the target Dart modular monolith for Ionic. The NestJS server remains the API and behavior reference until route parity is verified. Keep the PostgreSQL schema and `/api/v1` contracts stable while porting modules.
 
 ## Current slice

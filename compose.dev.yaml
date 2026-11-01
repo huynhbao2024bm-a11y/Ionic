@@ -1,6 +1,8 @@
 services:
   db:
-    image: postgres:17-alpine
+    image: ionic-postgres-dev:17.11-vector0.8.7
+    build:
+      context: ./infra/postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-ionic}
       POSTGRES_USER: ${POSTGRES_USER:-ionic_app}

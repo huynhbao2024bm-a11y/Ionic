@@ -91,7 +91,9 @@ RankerConfig buildRankerConfig(
     rankerVersion:
         env['RECOMMENDATION_RANKER_VERSION']?.trim().isNotEmpty == true
         ? env['RECOMMENDATION_RANKER_VERSION']!.trim()
-        : 'ionic-deterministic-v2',
+        : env['RECOMMENDATION_ADAPTIVE_ENABLED'] == 'true'
+        ? 'ionic-adaptive-v8'
+        : 'ionic-exploration-v7',
     taxonomyVersion: taxonomyVersion,
     nowMs: nowMs,
     weights: weights,
@@ -114,6 +116,10 @@ RankerConfig buildRankerConfig(
     strongMatchThreshold: readUnit(
       'RECOMMENDATION_STRONG_MATCH_THRESHOLD',
       0.18,
+    ),
+    nonDiscriminativeLabelPrevalenceThreshold: readUnit(
+      'RECOMMENDATION_NON_DISCRIMINATIVE_LABEL_PREVALENCE_THRESHOLD',
+      0.95,
     ),
     maxPerCreator: readInteger('RECOMMENDATION_MAX_PER_CREATOR', 3),
     maxPerTopic: readInteger('RECOMMENDATION_MAX_PER_TOPIC', 4),

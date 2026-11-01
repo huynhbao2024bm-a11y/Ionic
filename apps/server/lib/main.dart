@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:ionic_server/src/app.dart';
 import 'package:ionic_server/src/modules/database/database_service.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
+import 'package:ionic_server/src/modules/recommendation/recommendation_maintenance.dart';
 
 Future<void> main() async {
   final port = _readPort(Platform.environment['PORT']);
@@ -16,6 +17,7 @@ Future<void> main() async {
           .where((origin) => origin.isNotEmpty)
           .toSet();
   final database = DatabaseService.fromEnvironment();
+  final maintenance = RecommendationMaintenance(database)..start();
 
   final server = await shelf_io.serve(
     createApp(database: database, allowedOrigins: allowedOrigins),
@@ -27,11 +29,20 @@ Future<void> main() async {
     'Ionic Dart API listening on http://${server.address.host}:${server.port}',
   );
 
-  ProcessSignal.sigint.watch().listen((_) async {
-    await server.close(force: true);
+  var stopping = false;
+  Future<void> shutdown() async {
+    if (stopping) return;
+    stopping = true;
+    await server.close();
+    await maintenance.close();
     await database.close();
     exit(0);
-  });
+  }
+
+  ProcessSignal.sigint.watch().listen((_) => shutdown());
+  if (!Platform.isWindows) {
+    ProcessSignal.sigterm.watch().listen((_) => shutdown());
+  }
 }
 
 int _readPort(String? value) {

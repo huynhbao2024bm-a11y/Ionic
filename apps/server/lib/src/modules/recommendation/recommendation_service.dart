@@ -1,15 +1,28 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:crypto/crypto.dart';
 import 'package:ionic_server/src/http/api_exception.dart';
 import 'package:ionic_server/src/modules/database/database_service.dart';
 import 'package:ionic_server/src/modules/media/media_attachment_service.dart';
 import 'package:ionic_server/src/modules/recommendation/ranker.dart';
+
+import 'candidate_retrieval.dart';
+import 'preference_evidence.dart';
+import 'semantic_config.dart';
+import 'text_duplicates.dart';
+import 'feed_distribution.dart';
+import 'adaptive_feedback.dart';
+import 'adaptive_policy.dart';
+import 'adaptive_mixer.dart';
+
 import 'package:ionic_server/src/modules/recommendation/ranker_config.dart';
 import 'package:ionic_server/src/modules/recommendation/recommendation_signals.dart';
 import 'package:ionic_server/src/modules/recommendation/types.dart';
 import 'package:postgres/postgres.dart';
+
+part 'adaptive_feed_service.dart';
 
 final _uuidPattern = RegExp(
   r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
@@ -21,11 +34,15 @@ class _FeedCursor {
     required this.asOfMs,
     required this.afterId,
     required this.snapshotKey,
+    required this.randomSeed,
+    required this.pageSize,
   });
 
   final int asOfMs;
   final String afterId;
   final String snapshotKey;
+  final String randomSeed;
+  final int pageSize;
 }
 
 class _CandidateEntry {
@@ -42,25 +59,66 @@ class RecommendationService {
   final DatabaseService _database;
   final RecommendationSignalsService _signals;
 
+  Future<Map<String, Object?>> recordAttention(
+    String viewerId,
+    Map<String, Object?> input,
+  ) {
+    if (Platform.environment['RECOMMENDATION_ADAPTIVE_ENABLED'] != 'true') {
+      throw const ApiException(404, 'Attention collection is unavailable.');
+    }
+    return AdaptiveFeedbackService(_database).record(viewerId, input);
+  }
+
   Future<Map<String, Object?>> forYou(
     String viewerId,
     int limit,
-    String? cursorInput,
-  ) async {
+    String? cursorInput, {
+    bool retryFreshProfile = true,
+  }) async {
+    if (limit < 1 || limit > 50) {
+      throw const ApiException(
+        400,
+        'Limit must be an integer between 1 and 50.',
+      );
+    }
+    if (Platform.environment['RECOMMENDATION_ADAPTIVE_ENABLED'] == 'true') {
+      return _forYouAdaptive(viewerId, limit, cursorInput);
+    }
     final cursor = _parseCursor(cursorInput);
+    if (cursor != null && cursor.pageSize != limit) {
+      throw const ApiException(
+        400,
+        'Feed page size changed; refresh the feed.',
+        code: 'FEED_CURSOR_STALE',
+      );
+    }
+    final randomSeed = cursor?.randomSeed ?? _newFeedSeed();
+    final refreshed = await PreferenceEvidenceService().refresh(
+      _database,
+      viewerId,
+      buildRankerConfig(DateTime.now().millisecondsSinceEpoch.toDouble())
+          .preferenceHalfLifeMs,
+    );
+    if (refreshed && cursor != null) {
+      throw const ApiException(
+        400,
+        'Feed preferences changed; refresh the feed.',
+        code: 'FEED_CURSOR_STALE',
+      );
+    }
     final asOfMs = cursor?.asOfMs ?? DateTime.now().millisecondsSinceEpoch;
     final taxonomyVersion = _activeTaxonomyVersion();
     final candidateLimit = readCandidateLimit();
     final rankerConfig = buildRankerConfig(asOfMs.toDouble());
     final profileFuture = _loadViewerProfile(viewerId, taxonomyVersion, asOfMs);
-    final candidatesFuture = _loadCandidates(
-      viewerId: viewerId,
-      taxonomyVersion: taxonomyVersion,
-      asOfMs: asOfMs,
-      candidateLimit: candidateLimit,
-      minimumPreferenceConfidence: rankerConfig.minimumPreferenceConfidence,
-      preferenceHalfLifeMs: rankerConfig.preferenceHalfLifeMs,
-      adjacentLabels: rankerConfig.adjacentLabels,
+    final candidatesFuture = _database.query(
+      candidateRetrievalSql,
+      parameters: candidateRetrievalParameters(
+        viewerId: viewerId,
+        config: rankerConfig,
+        candidateLimit: candidateLimit,
+        randomSeed: randomSeed,
+      ),
     );
     final profileAndCandidates = await Future.wait<Object>([
       profileFuture,
@@ -68,72 +126,64 @@ class RecommendationService {
     ]);
     final profile = profileAndCandidates[0] as ViewerProfile;
     final rows = profileAndCandidates[1] as Result;
-
-    final candidatesById = <String, _CandidateEntry>{};
-    for (final row in rows) {
-      final value = row.toColumnMap();
-      final id = '${value['id']}';
-      final label = ContentLabel(
-        taxonomyVersion: '${value['taxonomy_version']}',
-        dimension: LabelDimension.values.byName('${value['dimension']}'),
-        labelId: '${value['label_id']}',
-        confidence: (value['confidence'] as num).toDouble(),
-        source: LabelSource.values.byName('${value['source']}'),
-      );
-      final existing = candidatesById[id];
-      if (existing != null) {
-        final old = existing.candidate;
-        existing.candidate = FeedCandidate(
-          id: old.id,
-          creatorId: old.creatorId,
-          kind: old.kind,
-          publishedAtMs: old.publishedAtMs,
-          labels: [...old.labels, label],
-          eligible: old.eligible,
-          visibleToViewer: old.visibleToViewer,
-          duplicateGroupId: old.duplicateGroupId,
-          qualityScore: old.qualityScore,
-        );
-      } else {
-        candidatesById[id] = _CandidateEntry(
-          candidate: FeedCandidate(
-            id: id,
-            creatorId: '${value['author_id']}',
-            kind: ContentKind.values.byName('${value['kind']}'),
-            publishedAtMs: _asDateTime(value['created_at'])
-                .millisecondsSinceEpoch
-                .toDouble(),
-            labels: [label],
-            eligible: true,
-            visibleToViewer: true,
-          ),
-          post: value,
+    // Stored features can change after a cursor's clock (or while a first page
+    // is loading). Never feed future-dated features into the pure ranker.
+    if (profile.preferences.any((feature) => feature.updatedAtMs > asOfMs)) {
+      if (cursor != null) {
+        throw const ApiException(
+          400,
+          'Feed preferences changed; refresh the feed.',
+          code: 'FEED_CURSOR_STALE',
         );
       }
+      if (retryFreshProfile) {
+        return forYou(viewerId, limit, null, retryFreshProfile: false);
+      }
+      throw const ApiException(503, 'Feed is changing; try again shortly.');
     }
 
-    final ranked = rankCandidates(
-      candidatesById.values.map((entry) => entry.candidate).toList(),
-      profile,
-      rankerConfig,
-      candidateLimit,
+    final prepared = _scoreCandidateRows(rows, profile, rankerConfig);
+    final candidatesById = prepared.entries, scored = prepared.scored;
+    final randomEntries =
+        candidatesById.entries
+            .where((e) => e.value.post['random_position'] != null)
+            .toList()
+          ..sort(
+            (a, b) => (a.value.post['random_position'] as num).compareTo(
+              b.value.post['random_position'] as num,
+            ),
+          );
+    final mixed = mixFeedSnapshot(
+      ranked: scored,
+      randomOrderedIds: randomEntries.map((e) => e.key).toList(),
+      pageSize: limit,
+      config: rankerConfig,
+      policy: FeedDistributionPolicy.fromEnvironment(),
     );
-    final snapshotKey = _rankedSnapshotKey(
-      ranked.map((item) => item.candidate.id).toList(),
-    );
+    final ranked = mixed.entries.map((e) => e.item).toList();
+    final snapshotKey = _rankedSnapshotKey([
+      rankerConfig.rankerVersion,
+      for (final entry in mixed.entries)
+        '${entry.isRandom ? 'r' : 'p'}:${entry.item.candidate.id}',
+    ]);
     var startIndex = 0;
     if (cursor != null) {
       if (cursor.snapshotKey != snapshotKey) {
         throw const ApiException(
           400,
           'Feed ranking changed; refresh the feed.',
+          code: 'FEED_CURSOR_STALE',
         );
       }
       final cursorIndex = ranked.indexWhere(
         (item) => item.candidate.id == cursor.afterId,
       );
       if (cursorIndex < 0) {
-        throw const ApiException(400, 'Feed cursor is no longer valid.');
+        throw const ApiException(
+          400,
+          'Feed cursor is no longer valid.',
+          code: 'FEED_CURSOR_STALE',
+        );
       }
       startIndex = cursorIndex + 1;
     }
@@ -167,6 +217,8 @@ class RecommendationService {
               asOfMs: asOfMs,
               afterId: page.last.candidate.id,
               snapshotKey: snapshotKey,
+              randomSeed: randomSeed,
+              pageSize: limit,
             ),
           )
         : null;
@@ -189,18 +241,42 @@ class RecommendationService {
       throw const ApiException(400, 'Settings are invalid.');
     }
     final paused = input['paused'] as bool;
-    await _database.query(
-      r'''INSERT INTO user_recommendation_setting(user_id, learning_paused)
+    await _database.transaction((tx) async {
+      await lockPreference(tx, viewerId);
+      await tx.execute(
+        r'''INSERT INTO user_recommendation_setting(user_id, learning_paused)
           VALUES ($1, $2)
           ON CONFLICT (user_id) DO UPDATE
           SET learning_paused = EXCLUDED.learning_paused, updated_at = now()''',
-      parameters: [viewerId, paused],
-    );
+        parameters: [viewerId, paused],
+      );
+      if (paused) {
+        await tx.execute(
+          r'UPDATE recommendation_delivery_receipt SET measurement_enabled=false WHERE user_id=$1',
+          parameters: [viewerId],
+        );
+      }
+    });
     return {'paused': paused};
   }
 
   Future<Map<String, String>> reset(String viewerId) async {
     await _database.transaction((transaction) async {
+      await lockPreference(transaction, viewerId);
+      for (final table in [
+        'recommendation_feed_plan',
+        'recommendation_delivery_receipt',
+        'recommendation_attention_summary',
+        'recommendation_audience_grant',
+        'user_preference_evidence',
+        'user_preference_baseline',
+        'recommendation_item_feedback',
+      ]) {
+        await transaction.execute(
+          'DELETE FROM $table WHERE user_id=\$1',
+          parameters: [viewerId],
+        );
+      }
       await transaction.execute(
         r'DELETE FROM user_preference_control WHERE user_id = $1',
         parameters: [viewerId],
@@ -216,7 +292,7 @@ class RecommendationService {
       await transaction.execute(
         r'''INSERT INTO user_recommendation_setting(user_id, learning_paused)
             VALUES ($1, false)
-            ON CONFLICT (user_id) DO UPDATE SET learning_paused = false, updated_at = now()''',
+            ON CONFLICT (user_id) DO UPDATE SET learning_paused = false, evidence_dirty=false,delivery_sequence=0, updated_at = now()''',
         parameters: [viewerId],
       );
     });
@@ -248,6 +324,30 @@ class RecommendationService {
           'Content has no active recommendation labels.',
         );
       }
+      await lockPreference(transaction, viewerId);
+      if (preference == 'none') {
+        await transaction.execute(
+          r'DELETE FROM recommendation_item_feedback WHERE user_id=$1 AND content_id=$2',
+          parameters: [viewerId, contentId],
+        );
+      } else {
+        await transaction.execute(
+          r'''INSERT INTO recommendation_item_feedback(user_id,content_id,preference,source_updated_at)
+          SELECT $1,id,$3,updated_at FROM content WHERE id=$2
+          ON CONFLICT(user_id,content_id) DO UPDATE SET preference=EXCLUDED.preference,
+            source_updated_at=EXCLUDED.source_updated_at,updated_at=now()''',
+          parameters: [viewerId, contentId, preference],
+        );
+        await transaction.execute(
+          r'''DELETE FROM recommendation_item_feedback WHERE user_id=$1 AND content_id NOT IN
+          (SELECT content_id FROM recommendation_item_feedback WHERE user_id=$1 ORDER BY updated_at DESC,content_id LIMIT 512)''',
+          parameters: [viewerId],
+        );
+      }
+      await transaction.execute(
+        r'UPDATE recommendation_post_distribution SET dirty=true WHERE content_id=$1',
+        parameters: [contentId],
+      );
       for (final row in labels) {
         final values = row.toColumnMap();
         final dimension = '${values['dimension']}';
@@ -295,8 +395,46 @@ class RecommendationService {
         r'INSERT INTO feed_content_hide(user_id, content_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
         parameters: [viewerId, contentId],
       );
+      await transaction.execute(
+        r'UPDATE recommendation_post_distribution SET dirty=true WHERE content_id=$1',
+        parameters: [contentId],
+      );
     });
     return {'status': 'hidden'};
+  }
+
+  Future<Map<String, Object?>> hidden(String viewerId) async {
+    final rows = await _database.query(
+      r'''SELECT c.id, c.body, u.handle, h.created_at
+      FROM feed_content_hide h JOIN content c ON c.id = h.content_id
+      JOIN app_user u ON u.id = c.author_id AND u.state = 'active'
+      JOIN user_profile p ON p.user_id = u.id
+      WHERE h.user_id = $1 AND c.status = 'published' AND c.deleted_at IS NULL
+        AND (p.visibility = 'public' OR u.id = $1 OR EXISTS (SELECT 1 FROM account_follow f WHERE f.follower_id = $1 AND f.followed_id = u.id))
+        AND NOT EXISTS (SELECT 1 FROM account_block b WHERE (b.blocker_id = $1 AND b.blocked_id = u.id) OR (b.blocker_id = u.id AND b.blocked_id = $1))
+      ORDER BY h.created_at DESC, c.id LIMIT 100''',
+      parameters: [viewerId],
+    );
+    return {
+      'items': rows
+          .map((r) => {'id': '${r[0]}', 'body': '${r[1]}', 'handle': '${r[2]}'})
+          .toList(),
+    };
+  }
+
+  Future<Map<String, String>> unhide(String viewerId, String inputId) async {
+    final id = _parseContentId(inputId);
+    await _database.transaction((tx) async {
+      await tx.execute(
+        r'DELETE FROM feed_content_hide WHERE user_id=$1 AND content_id=$2',
+        parameters: [viewerId, id],
+      );
+      await tx.execute(
+        r'UPDATE recommendation_post_distribution SET dirty=true WHERE content_id=$1',
+        parameters: [id],
+      );
+    });
+    return {'status': 'unhidden'};
   }
 
   Future<Map<String, String>> recordVideoSignal(
@@ -490,127 +628,6 @@ class RecommendationService {
     );
   }
 
-  Future<Result> _loadCandidates({
-    required String viewerId,
-    required String taxonomyVersion,
-    required int asOfMs,
-    required int candidateLimit,
-    required double minimumPreferenceConfidence,
-    required double preferenceHalfLifeMs,
-    required Map<String, List<String>> adjacentLabels,
-  }) => _database.query(
-    r'''WITH learned_positive_labels AS (
-         SELECT feature.dimension, feature.label_id
-         FROM user_preference_feature feature
-         WHERE feature.user_id = $2 AND feature.taxonomy_version = $1
-           AND feature.dimension IN ('topic', 'format', 'language', 'context')
-           AND feature.score > 0
-           AND feature.confidence * power(2::double precision,
-             -((extract(epoch FROM ($3::timestamptz - feature.updated_at)) * 1000.0)::double precision) / $6::double precision
-           ) >= $5
-           AND feature.updated_at <= $3 AND feature.expires_at > $3
-           AND NOT EXISTS (
-             SELECT 1 FROM user_preference_control less_control
-             WHERE less_control.user_id = $2 AND less_control.taxonomy_version = $1
-               AND less_control.dimension = feature.dimension AND less_control.label_id = feature.label_id
-               AND less_control.control = 'less'
-           )
-       ), positive_labels AS (
-         SELECT control.dimension, control.label_id FROM user_preference_control control
-         WHERE control.user_id = $2 AND control.taxonomy_version = $1 AND control.control = 'more'
-         UNION SELECT dimension, label_id FROM learned_positive_labels
-       ), adjacent_pairs AS (
-         SELECT preferred.label_id AS preferred_label_id, neighbor.label_id AS adjacent_label_id
-         FROM jsonb_each($7::jsonb) AS preferred(label_id, neighbors)
-         CROSS JOIN LATERAL jsonb_array_elements_text(preferred.neighbors) AS neighbor(label_id)
-       ), eligible_candidates AS NOT MATERIALIZED (
-         SELECT c.id, c.author_id, c.created_at, c.kind
-         FROM content c JOIN app_user u ON u.id = c.author_id AND u.state = 'active'
-         JOIN user_profile p ON p.user_id = u.id
-         WHERE c.kind = 'text' AND c.visibility = 'public'
-           AND c.status = 'published' AND c.deleted_at IS NULL
-           AND (c.kind = 'text' OR EXISTS (
-             SELECT 1 FROM video_asset ready_video WHERE ready_video.content_id = c.id AND ready_video.state = 'ready'
-           ))
-           AND c.created_at <= $3
-           AND (p.visibility = 'public' OR EXISTS (
-             SELECT 1 FROM account_follow f WHERE f.follower_id = $2 AND f.followed_id = u.id
-           ))
-           AND NOT EXISTS (SELECT 1 FROM account_block b
-             WHERE (b.blocker_id = $2 AND b.blocked_id = u.id) OR (b.blocker_id = u.id AND b.blocked_id = $2))
-           AND NOT EXISTS (SELECT 1 FROM account_mute m WHERE m.muter_id = $2 AND m.muted_id = u.id)
-           AND NOT EXISTS (SELECT 1 FROM feed_content_hide h WHERE h.user_id = $2 AND h.content_id = c.id)
-           AND EXISTS (SELECT 1 FROM content_label active_label WHERE active_label.content_id = c.id
-             AND active_label.taxonomy_version = $1 AND active_label.status = 'active')
-       ), followed_candidates AS (
-         SELECT e.id, e.created_at FROM eligible_candidates e
-         WHERE EXISTS (SELECT 1 FROM account_follow f WHERE f.follower_id = $2 AND f.followed_id = e.author_id)
-         ORDER BY e.created_at DESC, e.id DESC LIMIT $4
-       ), preference_candidates AS (
-         SELECT e.id, e.created_at FROM eligible_candidates e
-         JOIN content_label matched_label ON matched_label.content_id = e.id
-           AND matched_label.taxonomy_version = $1 AND matched_label.status = 'active'
-         JOIN positive_labels preference ON preference.dimension = matched_label.dimension
-           AND preference.label_id = matched_label.label_id
-         GROUP BY e.id, e.created_at ORDER BY e.created_at DESC, e.id DESC LIMIT $4
-       ), adjacent_candidates AS (
-         SELECT e.id, e.created_at FROM eligible_candidates e
-         JOIN content_label matched_label ON matched_label.content_id = e.id
-           AND matched_label.taxonomy_version = $1 AND matched_label.status = 'active'
-           AND matched_label.dimension = 'topic'
-         JOIN adjacent_pairs adjacent ON adjacent.adjacent_label_id = matched_label.label_id
-         JOIN learned_positive_labels learned ON learned.dimension = matched_label.dimension
-           AND learned.label_id = adjacent.preferred_label_id
-         WHERE NOT EXISTS (SELECT 1 FROM user_preference_control less_control
-           WHERE less_control.user_id = $2 AND less_control.taxonomy_version = $1
-             AND less_control.dimension = matched_label.dimension AND less_control.label_id = matched_label.label_id
-             AND less_control.control = 'less')
-         GROUP BY e.id, e.created_at ORDER BY e.created_at DESC, e.id DESC LIMIT $4
-       ), fresh_candidates AS (
-         SELECT e.id, e.created_at FROM eligible_candidates e
-         ORDER BY e.created_at DESC, e.id DESC LIMIT $4
-       ), source_candidates AS (
-         SELECT e.id, e.created_at, 0 AS source_priority FROM followed_candidates e
-         UNION ALL SELECT e.id, e.created_at, 1 AS source_priority FROM preference_candidates e
-         UNION ALL SELECT e.id, e.created_at, 2 AS source_priority FROM adjacent_candidates e
-         UNION ALL SELECT e.id, e.created_at, 3 AS source_priority FROM fresh_candidates e
-       ), source_positions AS (
-         SELECT id, source_priority, row_number() OVER (
-           PARTITION BY source_priority ORDER BY created_at DESC, id DESC
-         ) AS source_position FROM source_candidates
-       ), best_source AS (
-         SELECT DISTINCT ON (id) id, source_priority, source_position FROM source_positions
-         ORDER BY id, source_position, source_priority
-       ), selected_ids AS (
-         SELECT id FROM best_source ORDER BY source_position, source_priority, id LIMIT $4
-       ), selected_candidates AS (
-         SELECT c.id, c.author_id, c.body, c.kind, c.created_at, NULL::text AS mime_type,
-           u.handle AS author_handle, p.display_name AS author_display_name,
-           (SELECT count(*)::int FROM content_reaction r WHERE r.content_id = c.id) AS like_count,
-           (SELECT count(*)::int FROM content_reply r WHERE r.content_id = c.id AND r.status = 'published') AS reply_count,
-           EXISTS (SELECT 1 FROM content_reaction r WHERE r.content_id = c.id AND r.user_id = $2) AS liked,
-           EXISTS (SELECT 1 FROM content_bookmark b WHERE b.content_id = c.id AND b.user_id = $2) AS saved
-         FROM selected_ids selected JOIN eligible_candidates eligible ON eligible.id = selected.id
-         JOIN content c ON c.id = eligible.id JOIN app_user u ON u.id = c.author_id
-         JOIN user_profile p ON p.user_id = u.id
-       )
-       SELECT e.id, e.author_id, e.body, e.kind, e.mime_type, e.created_at, e.author_handle,
-         e.author_display_name, e.like_count, e.reply_count, e.liked, e.saved,
-         l.taxonomy_version, l.dimension, l.label_id, l.confidence, l.source
-       FROM selected_candidates e JOIN content_label l ON l.content_id = e.id
-         AND l.taxonomy_version = $1 AND l.status = 'active'
-       ORDER BY e.created_at DESC, e.id DESC, l.dimension, l.label_id''',
-    parameters: [
-      taxonomyVersion,
-      viewerId,
-      DateTime.fromMillisecondsSinceEpoch(asOfMs, isUtc: true),
-      candidateLimit,
-      minimumPreferenceConfidence,
-      preferenceHalfLifeMs,
-      jsonEncode(adjacentLabels),
-    ],
-  );
-
   Future<List<ResultRow>> _accessibleContentLabels(
     TxSession transaction,
     String viewerId,
@@ -667,27 +684,57 @@ String _parseContentId(String input) {
 
 _FeedCursor? _parseCursor(String? input) {
   if (input == null) return null;
-  if (input.length > 256 || !RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(input)) {
+  if (input.length > 512 || !RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(input)) {
     throw const ApiException(400, 'Feed cursor is invalid.');
   }
   try {
     final decoded = jsonDecode(
       utf8.decode(base64Url.decode(base64Url.normalize(input))),
     );
+    if (decoded is Map && decoded['v'] == 3) {
+      throw const ApiException(
+        400,
+        'Feed version changed; refresh the feed.',
+        code: 'FEED_CURSOR_STALE',
+      );
+    }
+    if (decoded is Map<String, dynamic> &&
+        decoded.length == 3 &&
+        decoded.keys.toSet().containsAll({
+          'asOfMs',
+          'afterId',
+          'snapshotKey',
+        })) {
+      throw const ApiException(
+        400,
+        'Feed version changed; refresh the feed.',
+        code: 'FEED_CURSOR_STALE',
+      );
+    }
     if (decoded is! Map<String, dynamic> ||
-        decoded.length != 3 ||
+        decoded.length != 6 ||
         !decoded.keys.toSet().containsAll(const {
           'asOfMs',
           'afterId',
           'snapshotKey',
+          'v',
+          'seed',
+          'pageSize',
         })) {
       throw const FormatException('Invalid cursor shape.');
     }
     final asOf = decoded['asOfMs'];
     final afterId = decoded['afterId'];
     final snapshotKey = decoded['snapshotKey'];
+    final randomSeed = decoded['seed'], pageSize = decoded['pageSize'];
     final nowMs = DateTime.now().millisecondsSinceEpoch;
-    if (asOf is! int ||
+    if (decoded['v'] != 2 ||
+        randomSeed is! String ||
+        !RegExp(r'^[0-9a-f]{32}$').hasMatch(randomSeed) ||
+        pageSize is! int ||
+        pageSize < 1 ||
+        pageSize > 50 ||
+        asOf is! int ||
         asOf < 0 ||
         asOf > 9007199254740991 ||
         asOf > nowMs + 60000 ||
@@ -701,7 +748,11 @@ _FeedCursor? _parseCursor(String? input) {
       asOfMs: asOf,
       afterId: afterId,
       snapshotKey: snapshotKey,
+      randomSeed: randomSeed,
+      pageSize: pageSize,
     );
+  } on ApiException {
+    rethrow;
   } on Object {
     throw const ApiException(400, 'Feed cursor is invalid.');
   }
@@ -715,15 +766,141 @@ String _encodeCursor(_FeedCursor cursor) => base64Url
     .encode(
       utf8.encode(
         jsonEncode({
+          'v': 2,
           'asOfMs': cursor.asOfMs,
           'afterId': cursor.afterId,
           'snapshotKey': cursor.snapshotKey,
+          'seed': cursor.randomSeed,
+          'pageSize': cursor.pageSize,
         }),
       ),
     )
     .replaceAll('=', '');
 
+String _newFeedSeed() {
+  final random = math.Random.secure();
+  return List.generate(
+    16,
+    (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+  ).join();
+}
+
 DateTime _asDateTime(Object? value) {
   if (value is DateTime) return value;
   throw StateError('Database returned an invalid timestamp.');
+}
+
+// Cosine thresholds are provisional evidence gates, not confidence estimates.
+double _semanticAffinity(Map<String, dynamic> row) {
+  final config = SemanticConfig();
+  final positive = (row['semantic_positive'] as num?)?.toDouble();
+  final negative = (row['semantic_negative'] as num?)?.toDouble();
+  if (positive == null ||
+      positive < config.minimumSimilarity ||
+      (negative != null && positive - negative < config.negativeMargin)) {
+    return 0;
+  }
+  return ((positive - config.minimumSimilarity) /
+          (1 - config.minimumSimilarity))
+      .clamp(0, 1)
+      .toDouble();
+}
+
+double _semanticAversion(Map<String, dynamic> row) {
+  final negative = (row['semantic_negative'] as num?)?.toDouble();
+  final positive = (row['semantic_positive'] as num?)?.toDouble();
+  final config = SemanticConfig();
+  if (negative == null ||
+      negative < config.minimumSimilarity ||
+      (positive != null && positive - negative >= config.negativeMargin)) {
+    return 0;
+  }
+  return ((negative - config.minimumSimilarity) /
+          (1 - config.minimumSimilarity))
+      .clamp(0, 1)
+      .toDouble();
+}
+
+({Map<String, _CandidateEntry> entries, List<RankedCandidate> scored})
+_scoreCandidateRows(
+  Result rows,
+  ViewerProfile profile,
+  RankerConfig rankerConfig,
+) {
+  final candidatesById = <String, _CandidateEntry>{};
+  for (final row in rows) {
+    final value = row.toColumnMap();
+    final id = '${value['id']}';
+    final label = ContentLabel(
+      taxonomyVersion: '${value['taxonomy_version']}',
+      dimension: LabelDimension.values.byName('${value['dimension']}'),
+      labelId: '${value['label_id']}',
+      confidence: (value['confidence'] as num).toDouble(),
+      source: LabelSource.values.byName('${value['source']}'),
+    );
+    final existing = candidatesById[id];
+    if (existing != null) {
+      final old = existing.candidate;
+      existing.candidate = FeedCandidate(
+        id: old.id,
+        creatorId: old.creatorId,
+        kind: old.kind,
+        publishedAtMs: old.publishedAtMs,
+        labels: [...old.labels, label],
+        eligible: old.eligible,
+        visibleToViewer: old.visibleToViewer,
+        duplicateGroupId: old.duplicateGroupId,
+        qualityScore: old.qualityScore,
+        semanticAffinity: old.semanticAffinity,
+        semanticAversion: old.semanticAversion,
+      );
+    } else {
+      candidatesById[id] = _CandidateEntry(
+        candidate: FeedCandidate(
+          id: id,
+          creatorId: '${value['author_id']}',
+          kind: ContentKind.values.byName('${value['kind']}'),
+          publishedAtMs: _asDateTime(value['created_at']).millisecondsSinceEpoch
+              .toDouble(),
+          labels: [label],
+          eligible: true,
+          visibleToViewer: true,
+          semanticAffinity: _semanticAffinity(value),
+          semanticAversion: _semanticAversion(value),
+        ),
+        post: value,
+      );
+    }
+  }
+
+  final groups = textDuplicateGroups({
+    for (final entry in candidatesById.entries)
+      if (entry.value.post['has_attachments'] != true)
+        entry.key: '${entry.value.post['body']}',
+  });
+  for (final entry in candidatesById.entries) {
+    final old = entry.value.candidate;
+    entry.value.candidate = FeedCandidate(
+      id: old.id,
+      creatorId: old.creatorId,
+      kind: old.kind,
+      publishedAtMs: old.publishedAtMs,
+      labels: old.labels,
+      eligible: old.eligible,
+      visibleToViewer: old.visibleToViewer,
+      duplicateGroupId: groups[old.id],
+      semanticAffinity: old.semanticAffinity,
+      semanticAversion: old.semanticAversion,
+    );
+  }
+  final scored = rankCandidates(
+    candidatesById.values.map((entry) => entry.candidate).toList(),
+    profile,
+    rankerConfig,
+    candidatesById.length,
+    diversify: false,
+    deduplicateGroups: false,
+  );
+
+  return (entries: candidatesById, scored: scored);
 }

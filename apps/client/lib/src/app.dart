@@ -1,10 +1,15 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'ionic_api.dart';
+import 'dialogs.dart';
 import 'media_composer.dart';
 import 'screens.dart';
 import 'settings_screen.dart';
+import 'account_controls.dart';
+import 'client_preferences.dart';
+import 'draft_store.dart';
 
 const _brand = Color(0xff4c5fdb);
 const _accent = Color(0xff8052e8);
@@ -158,6 +163,7 @@ class _IonicClientAppState extends State<IonicClientApp> {
   void initState() {
     super.initState();
     _restoreTheme();
+    clientPreferences.load();
   }
 
   Future<void> _restoreTheme() async {
@@ -187,13 +193,35 @@ class _IonicClientAppState extends State<IonicClientApp> {
   }
 
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    title: 'Ionic',
-    debugShowCheckedModeBanner: false,
-    theme: ionicTheme(Brightness.light),
-    darkTheme: ionicTheme(Brightness.dark),
-    themeMode: _themeMode,
-    home: IonicShell(onThemeModeChanged: _setThemeMode, themeMode: _themeMode),
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: clientPreferences,
+    builder: (_, _) => MaterialApp(
+      title: 'Ionic',
+      debugShowCheckedModeBanner: false,
+      theme: ionicTheme(Brightness.light),
+      darkTheme: ionicTheme(Brightness.dark),
+      themeMode: _themeMode,
+      builder: (context, child) {
+        final media = MediaQuery.of(context);
+        return MediaQuery(
+          data: media.copyWith(
+            textScaler: IonicTextScaler(
+              media.textScaler,
+              clientPreferences.textScale,
+            ),
+            disableAnimations:
+                media.disableAnimations || clientPreferences.reducedMotion,
+            accessibleNavigation:
+                media.accessibleNavigation || clientPreferences.reducedMotion,
+          ),
+          child: child!,
+        );
+      },
+      home: IonicShell(
+        onThemeModeChanged: _setThemeMode,
+        themeMode: _themeMode,
+      ),
+    ),
   );
 }
 
@@ -245,7 +273,7 @@ class _IonicShellState extends State<IonicShell> {
   }
 
   Future<void> _authenticate({String mode = 'register'}) async {
-    final user = await showDialog<ApiUser>(
+    final user = await showIonicDialog<ApiUser>(
       context: context,
       barrierDismissible: false,
       builder: (context) => _AuthDialog(api: _api, initialMode: mode),
@@ -266,6 +294,17 @@ class _IonicShellState extends State<IonicShell> {
       return;
     }
     if (!mounted) return;
+    _accountEnded();
+  }
+
+  void _accountEnded() {
+    if (!mounted) return;
+    final oldId = _user?.id;
+    if (oldId != null) {
+      unawaited(DraftStore.clear(oldId).catchError((Object _) {}));
+    }
+    PaintingBinding.instance.imageCache.clear();
+    PaintingBinding.instance.imageCache.clearLiveImages();
     setState(() {
       _user = null;
       _profileHandle = null;
@@ -280,9 +319,9 @@ class _IonicShellState extends State<IonicShell> {
       await _authenticate(mode: 'login');
       if (_user == null || !mounted) return;
     }
-    final post = await showDialog<FeedPost>(
+    final post = await showIonicDialog<FeedPost>(
       context: context,
-      builder: (context) => _ComposeDialog(api: _api),
+      builder: (context) => _ComposeDialog(api: _api, userId: _user!.id),
     );
     if (post == null || !mounted) return;
     _toast('Bài viết đã được lưu.');
@@ -366,6 +405,7 @@ class _IonicShellState extends State<IonicShell> {
       onToast: _toast,
     ),
     _Page.settings => SettingsScreen(
+      key: ValueKey(_user?.id),
       api: _api,
       user: _user,
       onAuthenticate: _authenticate,
@@ -373,6 +413,7 @@ class _IonicShellState extends State<IonicShell> {
       themeMode: widget.themeMode,
       onThemeModeChanged: widget.onThemeModeChanged,
       onSignOut: _signOut,
+      onSessionEnded: _accountEnded,
       onToast: _toast,
     ),
   };
@@ -812,6 +853,25 @@ class _AuthDialogState extends State<_AuthDialog> {
                   style: TextStyle(color: Theme.of(context).colorScheme.error),
                 ),
               ],
+              if (!_register)
+                TextButton(
+                  onPressed: _busy
+                      ? null
+                      : () async {
+                          final recovered = await showIonicDialog<bool>(
+                            context: context,
+                            barrierDismissible: false,
+                            builder: (_) => RecoveryDialog(api: widget.api),
+                          );
+                          if (recovered == true && mounted) {
+                            setState(
+                              () => _error =
+                                  'Đã đặt lại mật khẩu. Đăng nhập bằng mật khẩu mới.',
+                            );
+                          }
+                        },
+                  child: const Text('Quên mật khẩu?'),
+                ),
               const SizedBox(height: 17),
               FilledButton(
                 onPressed: _busy ? null : _submit,
@@ -832,22 +892,76 @@ class _AuthDialogState extends State<_AuthDialog> {
 }
 
 class _ComposeDialog extends StatefulWidget {
-  const _ComposeDialog({required this.api});
+  const _ComposeDialog({required this.api, required this.userId});
   final IonicApi api;
+  final String userId;
 
   @override
   State<_ComposeDialog> createState() => _ComposeDialogState();
 }
 
 class _ComposeDialogState extends State<_ComposeDialog> {
+  late final _publication = MediaPublication(widget.api);
+  String? _progress;
   final _text = TextEditingController();
   IonicMediaDraft _media = const IonicMediaDraft();
   bool _mediaBusy = false;
   bool _publishing = false;
   String? _error;
+  Timer? _draftDelay;
+  bool _published = false;
+  String? _draftNotice;
+
+  @override
+  void initState() {
+    super.initState();
+    _restoreDraft();
+    _text.addListener(_saveDraftSoon);
+  }
+
+  Future<void> _restoreDraft() async {
+    try {
+      final text = await DraftStore.read(widget.userId);
+      if (mounted && _text.text.isEmpty && text != null) {
+        _text.text = text;
+        setState(
+          () => _draftNotice =
+              'Đã khôi phục phần chữ của bản nháp. Ảnh và voice cần chọn lại.',
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () => _draftNotice = 'Không tải được bản nháp trên thiết bị này.',
+        );
+      }
+    }
+  }
+
+  void _saveDraftSoon() {
+    _draftDelay?.cancel();
+    _draftDelay = Timer(const Duration(milliseconds: 500), () async {
+      try {
+        await DraftStore.save(widget.userId, _text.text);
+      } catch (_) {
+        if (mounted) {
+          setState(
+            () => _draftNotice = 'Không lưu được bản nháp trên thiết bị này.',
+          );
+        }
+      }
+    });
+  }
 
   @override
   void dispose() {
+    _draftDelay?.cancel();
+    if (!_published) {
+      unawaited(
+        DraftStore.save(widget.userId, _text.text).catchError((Object _) {}),
+      );
+    }
+    unawaited(_publication.dispose());
     _text.dispose();
     super.dispose();
   }
@@ -859,29 +973,24 @@ class _ComposeDialogState extends State<_ComposeDialog> {
       _publishing = true;
       _error = null;
     });
-    final staged = <String>[];
     try {
-      for (final image in _media.images) {
-        staged.add(
-          (await widget.api.uploadAttachment(image, mediaType: 'image')).id,
-        );
+      final staged = await _publication.prepare(body, _media, (value) {
+        if (mounted) setState(() => _progress = value);
+      });
+      final post = await widget.api.createPost(
+        body,
+        attachmentIds: staged,
+        clientPublishId: _publication.id,
+      );
+      _published = true;
+      _draftDelay?.cancel();
+      try {
+        await DraftStore.clear(widget.userId);
+      } catch (_) {
+        /* Publication already committed. */
       }
-      final voice = _media.voice;
-      if (voice != null) {
-        staged.add(
-          (await widget.api.uploadAttachment(voice, mediaType: 'audio')).id,
-        );
-      }
-      final post = await widget.api.createPost(body, attachmentIds: staged);
       if (mounted) Navigator.of(context).pop(post);
     } catch (error) {
-      for (final id in staged) {
-        try {
-          await widget.api.deleteStagedAttachment(id);
-        } catch (_) {
-          // Server removes unattached staging records after the retention window.
-        }
-      }
       if (mounted) setState(() => _error = apiErrorText(error));
     } finally {
       if (mounted) setState(() => _publishing = false);
@@ -889,75 +998,86 @@ class _ComposeDialogState extends State<_ComposeDialog> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Tạo bài viết'),
-    content: SizedBox(
-      width: 520,
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: _text,
-              autofocus: true,
-              maxLength: 280,
-              onChanged: (_) => setState(() {}),
-              maxLines: 7,
-              minLines: 4,
-              decoration: const InputDecoration(
-                hintText: 'Bạn đang nghĩ gì?',
-                border: InputBorder.none,
-                counterText: '',
+  Widget build(BuildContext context) => PopScope(
+    canPop: !_publishing,
+    child: AlertDialog(
+      title: const Text('Tạo bài viết'),
+      content: SizedBox(
+        width: 520,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (_draftNotice != null)
+                Text(
+                  _draftNotice!,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              TextField(
+                controller: _text,
+                readOnly: _publishing,
+                autofocus: true,
+                maxLength: 280,
+                onChanged: (_) => setState(() {}),
+                maxLines: 7,
+                minLines: 4,
+                decoration: const InputDecoration(
+                  hintText: 'Bạn đang nghĩ gì?',
+                  border: InputBorder.none,
+                  counterText: '',
+                ),
               ),
-            ),
-            MediaComposerControls(
-              onChanged: (value) => setState(() => _media = value),
-              onBusyChanged: (value) => setState(() => _mediaBusy = value),
-            ),
-            if (_error != null)
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Text(
-                    _error!,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
+              if (_publishing && _progress != null) Text(_progress!),
+              MediaComposerControls(
+                enabled: !_publishing,
+                onChanged: (value) => setState(() => _media = value),
+                onBusyChanged: (value) => setState(() => _mediaBusy = value),
+              ),
+              if (_error != null)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      _error!,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
                     ),
                   ),
                 ),
-              ),
-          ],
+            ],
+          ),
         ),
       ),
+      actions: [
+        Text(
+          '${_text.text.length}/280',
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+        TextButton(
+          onPressed: _publishing || _mediaBusy
+              ? null
+              : () => Navigator.of(context).pop(),
+          child: const Text('Hủy'),
+        ),
+        FilledButton(
+          onPressed:
+              _publishing ||
+                  _mediaBusy ||
+                  _text.text.trim().isEmpty ||
+                  _text.text.length > 280
+              ? null
+              : _publish,
+          child: _publishing
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Đăng bài'),
+        ),
+      ],
     ),
-    actions: [
-      Text(
-        '${_text.text.length}/280',
-        style: Theme.of(context).textTheme.bodyMedium,
-      ),
-      TextButton(
-        onPressed: _publishing || _mediaBusy
-            ? null
-            : () => Navigator.of(context).pop(),
-        child: const Text('Hủy'),
-      ),
-      FilledButton(
-        onPressed:
-            _publishing ||
-                _mediaBusy ||
-                _text.text.trim().isEmpty ||
-                _text.text.length > 280
-            ? null
-            : _publish,
-        child: _publishing
-            ? const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Text('Đăng bài'),
-      ),
-    ],
   );
 }

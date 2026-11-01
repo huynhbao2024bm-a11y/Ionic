@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:record/record.dart';
+import 'ionic_api.dart';
+import 'voice_player.dart';
 
 class IonicMediaDraft {
   const IonicMediaDraft({this.images = const [], this.voice});
@@ -14,21 +16,75 @@ class IonicMediaDraft {
   bool get isEmpty => images.isEmpty && voice == null;
 }
 
+/// A retry keeps the same publication ID and successful staged uploads. This
+/// handles the case where the server commits but its response is lost.
+class MediaPublication {
+  MediaPublication(this.api);
+  final IonicApi api;
+  String _id = IonicApi.newClientMessageId();
+  String? _body;
+  IonicMediaDraft? _draft;
+  final Map<Uint8List, String> _uploaded = Map.identity();
+
+  Future<List<String>> prepare(
+    String body,
+    IonicMediaDraft draft,
+    void Function(String) progress,
+  ) async {
+    if (_body != body || !identical(_draft, draft)) {
+      _id = IonicApi.newClientMessageId();
+      _body = body;
+      _draft = draft;
+    }
+    final files = [...draft.images, if (draft.voice != null) draft.voice!];
+    final ids = <String>[];
+    for (var i = 0; i < files.length; i++) {
+      progress('Đang tải tệp ${i + 1}/${files.length}…');
+      final bytes = files[i];
+      final id =
+          _uploaded[bytes] ??
+          (await api.uploadAttachment(
+            bytes,
+            mediaType: draft.voice == bytes ? 'audio' : 'image',
+          )).id;
+      _uploaded[bytes] = id;
+      ids.add(id);
+    }
+    progress('Đang lưu…');
+    return ids;
+  }
+
+  String get id => _id;
+  Future<void> dispose() async {
+    for (final id in _uploaded.values.toSet()) {
+      try {
+        await api.deleteStagedAttachment(id);
+      } catch (_) {
+        /* Attached objects remain; abandoned uploads expire. */
+      }
+    }
+    _uploaded.clear();
+  }
+}
+
 class MediaComposerControls extends StatefulWidget {
   const MediaComposerControls({
     required this.onChanged,
     this.onBusyChanged,
+    this.enabled = true,
     super.key,
   });
 
   final ValueChanged<IonicMediaDraft> onChanged;
   final ValueChanged<bool>? onBusyChanged;
+  final bool enabled;
 
   @override
   State<MediaComposerControls> createState() => _MediaComposerControlsState();
 }
 
-class _MediaComposerControlsState extends State<MediaComposerControls> {
+class _MediaComposerControlsState extends State<MediaComposerControls>
+    with WidgetsBindingObserver {
   static const _maximumImages = 4;
   static const _maximumRecordingSeconds = 60;
   static const _maximumPcmBytes = 16000 * 2 * _maximumRecordingSeconds;
@@ -44,9 +100,25 @@ class _MediaComposerControlsState extends State<MediaComposerControls> {
   bool _processing = false;
   int _recordingSeconds = 0;
   String? _error;
+  bool _foreground = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _foreground = state == AppLifecycleState.resumed;
+    if (state != AppLifecycleState.resumed && _recording) {
+      unawaited(_stopRecording());
+    }
+  }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _recordingTimer?.cancel();
     _recordingSubscription?.cancel();
     _recorder.dispose();
@@ -58,19 +130,32 @@ class _MediaComposerControlsState extends State<MediaComposerControls> {
   );
 
   Future<void> _pickImages() async {
-    if (_recording || _processing || _voice != null) return;
+    if (!widget.enabled || _recording || _processing || _voice != null) return;
     setState(() => _error = null);
     try {
-      final picked = await _picker.pickMultiImage(
-        limit: _maximumImages - _images.length,
-        maxWidth: 2560,
-        maxHeight: 2560,
-        imageQuality: 94,
-      );
+      final remaining = _maximumImages - _images.length;
+      final picked = remaining == 1
+          ? [
+              await _picker.pickImage(
+                source: ImageSource.gallery,
+                maxWidth: 2560,
+                maxHeight: 2560,
+                imageQuality: 94,
+              ),
+            ].whereType<XFile>().toList()
+          : await _picker.pickMultiImage(
+              limit: remaining,
+              maxWidth: 2560,
+              maxHeight: 2560,
+              imageQuality: 94,
+            );
       if (picked.isEmpty || !mounted) return;
       setState(() => _processing = true);
       widget.onBusyChanged?.call(true);
       for (final file in picked.take(_maximumImages - _images.length)) {
+        if (await file.length() > 24 * 1024 * 1024) {
+          throw StateError('Ảnh nguồn vượt quá 24 MB.');
+        }
         final input = await file.readAsBytes();
         final optimized = await compute(_optimizeJpeg, input);
         if (optimized.length > 8 * 1024 * 1024) {
@@ -91,28 +176,45 @@ class _MediaComposerControlsState extends State<MediaComposerControls> {
   }
 
   Future<void> _toggleRecording() async {
-    if (_processing) return;
+    if (!widget.enabled || _processing) return;
     if (_recording) {
       await _stopRecording();
       return;
     }
     if (_images.isNotEmpty) return;
-    setState(() => _error = null);
+    setState(() {
+      _error = null;
+      _processing = true;
+    });
+    widget.onBusyChanged?.call(true);
     try {
       if (!await _recorder.hasPermission()) {
+        if (!mounted) return;
         setState(() => _error = 'Cần quyền microphone để ghi voice.');
         return;
       }
+      if (!mounted || !_foreground) return;
       _pcm.clear();
-      final stream = await _recorder.startStream(
-        const RecordConfig(
-          encoder: AudioEncoder.pcm16bits,
-          sampleRate: 16000,
-          numChannels: 1,
-          echoCancel: true,
-          noiseSuppress: true,
-        ),
-      );
+      final stream = await _recorder
+          .startStream(
+            const RecordConfig(
+              encoder: AudioEncoder.pcm16bits,
+              sampleRate: 16000,
+              numChannels: 1,
+              echoCancel: true,
+              noiseSuppress: true,
+            ),
+          )
+          .timeout(const Duration(seconds: 15));
+      if (!mounted || !_foreground) {
+        await _recorder.stop();
+        return;
+      }
+      setState(() {
+        _recording = true;
+        _processing = false;
+        _recordingSeconds = 0;
+      });
       _recordingSubscription = stream.listen(
         (chunk) {
           if (_pcm.length + chunk.length > _maximumPcmBytes) {
@@ -126,10 +228,6 @@ class _MediaComposerControlsState extends State<MediaComposerControls> {
           unawaited(_stopRecording(discard: true));
         },
       );
-      setState(() {
-        _recording = true;
-        _recordingSeconds = 0;
-      });
       widget.onBusyChanged?.call(true);
       _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
         if (!mounted) return;
@@ -141,6 +239,11 @@ class _MediaComposerControlsState extends State<MediaComposerControls> {
     } catch (error) {
       if (mounted) {
         setState(() => _error = 'Không bắt đầu ghi voice được: $error');
+      }
+    } finally {
+      if (mounted && !_recording) {
+        setState(() => _processing = false);
+        widget.onBusyChanged?.call(false);
       }
     }
   }
@@ -154,9 +257,10 @@ class _MediaComposerControlsState extends State<MediaComposerControls> {
       _processing = true;
     });
     try {
-      await _recorder.stop();
+      await _recorder.stop().timeout(const Duration(seconds: 10));
       await _recordingSubscription?.cancel();
       _recordingSubscription = null;
+      if (!mounted) return;
       final usableBytes = _pcm.length - (_pcm.length % 2);
       if (!discard && usableBytes >= 16000 * 2) {
         _voice = _encodeWave(
@@ -169,6 +273,8 @@ class _MediaComposerControlsState extends State<MediaComposerControls> {
     } catch (error) {
       if (mounted) setState(() => _error = 'Không hoàn tất ghi voice: $error');
     } finally {
+      await _recordingSubscription?.cancel();
+      _recordingSubscription = null;
       _pcm.clear();
       if (mounted) {
         setState(() => _processing = false);
@@ -216,7 +322,9 @@ class _MediaComposerControlsState extends State<MediaComposerControls> {
                       right: 3,
                       top: 3,
                       child: IconButton.filledTonal(
-                        onPressed: () => _removeImage(index),
+                        onPressed: widget.enabled && !_processing && !_recording
+                            ? () => _removeImage(index)
+                            : null,
                         visualDensity: VisualDensity.compact,
                         tooltip: 'Xóa ảnh',
                         icon: const Icon(Icons.close_rounded, size: 16),
@@ -228,6 +336,12 @@ class _MediaComposerControlsState extends State<MediaComposerControls> {
           ),
         ),
       if (_voice != null)
+        VoicePlayer(
+          key: ObjectKey(_voice),
+          load: () async => _voice!,
+          durationMs: ((_voice!.lengthInBytes - 44) / 32).round(),
+        ),
+      if (_voice != null)
         Card(
           margin: const EdgeInsets.only(bottom: 8),
           child: ListTile(
@@ -237,7 +351,7 @@ class _MediaComposerControlsState extends State<MediaComposerControls> {
             subtitle: Text('${_voice!.lengthInBytes ~/ 32000} giây'),
             trailing: IconButton(
               tooltip: 'Xóa voice',
-              onPressed: _removeVoice,
+              onPressed: widget.enabled ? _removeVoice : null,
               icon: const Icon(Icons.close_rounded),
             ),
           ),
@@ -247,7 +361,8 @@ class _MediaComposerControlsState extends State<MediaComposerControls> {
           IconButton(
             tooltip: 'Thêm ảnh',
             onPressed:
-                _processing ||
+                !widget.enabled ||
+                    _processing ||
                     _recording ||
                     _voice != null ||
                     _images.length >= _maximumImages
@@ -257,7 +372,11 @@ class _MediaComposerControlsState extends State<MediaComposerControls> {
           ),
           IconButton(
             tooltip: _recording ? 'Dừng ghi voice' : 'Ghi voice',
-            onPressed: _processing || _images.isNotEmpty || _voice != null
+            onPressed:
+                !widget.enabled ||
+                    _processing ||
+                    _images.isNotEmpty ||
+                    _voice != null
                 ? null
                 : _toggleRecording,
             icon: Icon(
@@ -266,7 +385,11 @@ class _MediaComposerControlsState extends State<MediaComposerControls> {
             ),
           ),
           if (_recording)
-            Text('Đang ghi  $_recordingSeconds/$_maximumRecordingSeconds giây'),
+            Flexible(
+              child: Text(
+                'Đang ghi  $_recordingSeconds/$_maximumRecordingSeconds giây',
+              ),
+            ),
           if (_processing)
             const Padding(
               padding: EdgeInsets.only(left: 8),
@@ -310,6 +433,9 @@ Uint8List _optimizeJpeg(Uint8List bytes) {
           height: oriented.height > oriented.width ? 2048 : null,
         )
       : oriented;
+  resized.exif = img.ExifData();
+  resized.iccProfile = null;
+  resized.textData = null;
   return Uint8List.fromList(img.encodeJpg(resized, quality: 86));
 }
 

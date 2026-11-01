@@ -1,0 +1,16 @@
+**
+!Dockerfile
+!apps/
+!apps/server/
+!apps/server/pubspec.yaml
+!apps/server/pubspec.lock
+!apps/server/lib/
+!apps/server/lib/**
+!apps/server/bin/
+!apps/server/bin/**
+!apps/api/
+!apps/api/migrations/
+!apps/api/migrations/*.sql
+!infra/
+!infra/supabase/
+!infra/supabase/prod-ca-2021.crt

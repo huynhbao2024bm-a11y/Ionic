@@ -26,10 +26,11 @@ String? jsonCursor(Object? value) {
 }
 
 class IonicApiException implements Exception {
-  const IonicApiException(this.statusCode, this.message);
+  const IonicApiException(this.statusCode, this.message, {this.code});
 
   final int statusCode;
   final String message;
+  final String? code;
 
   @override
   String toString() => message;
@@ -51,6 +52,9 @@ String apiErrorText(Object error) {
       case 409:
         return 'Tên tài khoản này đã được sử dụng.';
       case 503:
+        if (error.code == 'FEED_BUSY') {
+          return 'Bảng tin đang cập nhật. Vui lòng thử lại.';
+        }
         return 'Cơ sở dữ liệu chưa sẵn sàng. Dữ liệu chưa được lưu.';
     }
     return error.message;
@@ -94,6 +98,7 @@ class FeedPost {
     this.attachments = const [],
     this.kind = 'text',
     this.mimeType,
+    this.receiptId,
   });
 
   final String id;
@@ -109,6 +114,7 @@ class FeedPost {
   final List<ApiAttachment> attachments;
   final String kind;
   final String? mimeType;
+  final String? receiptId;
 
   factory FeedPost.fromJson(Object? value) {
     final map = asJsonMap(value);
@@ -130,6 +136,7 @@ class FeedPost {
           : const [],
       kind: '${map['kind'] ?? 'text'}',
       mimeType: map['mimeType'] as String?,
+      receiptId: map['receiptId'] as String?,
     );
   }
 }
@@ -213,6 +220,7 @@ class ApiConversation {
     required this.partnerDisplayName,
     required this.lastMessage,
     required this.updatedAt,
+    this.unreadCount = 0,
   });
 
   final String id;
@@ -220,6 +228,7 @@ class ApiConversation {
   final String partnerDisplayName;
   final String lastMessage;
   final String updatedAt;
+  final int unreadCount;
 
   factory ApiConversation.fromJson(Object? value) {
     final map = asJsonMap(value);
@@ -229,6 +238,7 @@ class ApiConversation {
       partnerDisplayName: '${map['partnerDisplayName'] ?? 'Tài khoản'}',
       lastMessage: '${map['lastMessage'] ?? ''}',
       updatedAt: '${map['updatedAt'] ?? ''}',
+      unreadCount: (map['unreadCount'] as num?)?.toInt() ?? 0,
     );
   }
 }
@@ -324,8 +334,9 @@ class IonicApi {
       request.body = jsonEncode(body);
     }
     try {
-      final streamed = await _client.send(request);
-      final response = await http.Response.fromStream(streamed);
+      final response = await (() async => http.Response.fromStream(
+        await _client.send(request),
+      ))().timeout(const Duration(seconds: 30));
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw _exception(response.statusCode, response.body);
       }
@@ -340,9 +351,11 @@ class IonicApi {
 
   IonicApiException _exception(int status, String body) {
     var message = 'Yêu cầu thất bại.';
+    String? code;
     try {
       final decoded = asJsonMap(jsonDecode(body));
       final candidate = decoded['message'];
+      if (decoded['code'] is String) code = decoded['code'] as String;
       if (candidate is String) message = candidate;
       if (candidate is List && candidate.isNotEmpty) {
         message = candidate.join(' ');
@@ -350,7 +363,7 @@ class IonicApi {
     } catch (_) {
       // Keep the stable local message when the server body isn't JSON.
     }
-    return IonicApiException(status, message);
+    return IonicApiException(status, message, code: code);
   }
 
   Future<ApiUser> _account(Object? value) async =>
@@ -384,6 +397,53 @@ class IonicApi {
     await _request('POST', 'auth/logout', body: const {});
   }
 
+  Future<JsonMap> accountSettings() async =>
+      asJsonMap(await _request('GET', 'auth/settings'));
+  Future<JsonMap> exportAccount() async =>
+      asJsonMap(await _request('GET', 'auth/export'));
+  Future<JsonMap> updateAccountSettings(JsonMap changes) async =>
+      asJsonMap(await _request('PATCH', 'auth/settings', body: changes));
+  Future<List<JsonMap>> sessions() async =>
+      jsonItems(await _request('GET', 'auth/sessions'));
+  Future<void> revokeSession(String id) async =>
+      _request('DELETE', 'auth/sessions/${Uri.encodeComponent(id)}');
+  Future<void> logoutAll() async =>
+      _request('POST', 'auth/logout-all', body: const {});
+  Future<void> changePassword(
+    String currentPassword,
+    String newPassword,
+  ) async => _request(
+    'POST',
+    'auth/password',
+    body: {'currentPassword': currentPassword, 'newPassword': newPassword},
+  );
+  Future<String> recoveryCode(String currentPassword) async =>
+      '${asJsonMap(await _request('POST', 'auth/recovery-code', body: {'currentPassword': currentPassword}))['recoveryCode']}';
+  Future<void> recover(String handle, String code, String password) async =>
+      _request(
+        'POST',
+        'auth/recover',
+        body: {
+          'handle': handle.trim().toLowerCase(),
+          'recoveryCode': code.trim(),
+          'newPassword': password,
+        },
+      );
+  Future<void> deleteAccount(String password) async => _request(
+    'POST',
+    'auth/delete-account',
+    body: {'currentPassword': password, 'confirmation': 'DELETE'},
+  );
+  Future<void> editPost(String id, String body) async => _request(
+    'PATCH',
+    'posts/${Uri.encodeComponent(id)}',
+    body: {'body': body},
+  );
+  Future<void> deletePost(String id) async =>
+      _request('DELETE', 'posts/${Uri.encodeComponent(id)}');
+  Future<FeedPage> savedPosts({String? cursor}) =>
+      _feed('posts/saved', cursor: cursor);
+
   Future<FeedPage> forYou({String? cursor}) =>
       _feed('feed/for-you', cursor: cursor);
   Future<FeedPage> publicPosts({String? cursor}) =>
@@ -396,7 +456,8 @@ class IonicApi {
     'posts/author/${Uri.encodeComponent(_plainHandle(handle))}',
     cursor: cursor,
   );
-  Future<FeedPage> myPosts() => _feed('posts/mine', limit: 50);
+  Future<FeedPage> myPosts({String? cursor}) =>
+      _feed('posts/mine', limit: 50, cursor: cursor);
 
   Future<FeedPage> _feed(
     String path, {
@@ -416,11 +477,16 @@ class IonicApi {
   Future<FeedPost> createPost(
     String body, {
     List<String> attachmentIds = const [],
+    String? clientPublishId,
   }) async => FeedPost.fromJson(
     await _request(
       'POST',
       'posts',
-      body: {'body': body, 'attachmentIds': attachmentIds},
+      body: {
+        'body': body,
+        'attachmentIds': attachmentIds,
+        'clientPublishId': ?clientPublishId,
+      },
     ),
   );
   Future<JsonMap> setLike(String id, bool liked) async => asJsonMap(
@@ -453,11 +519,16 @@ class IonicApi {
     String id,
     String body, {
     List<String> attachmentIds = const [],
+    String? clientPublishId,
   }) async => FeedPost.fromJson(
     await _request(
       'POST',
       'posts/${Uri.encodeComponent(id)}/replies',
-      body: {'body': body, 'attachmentIds': attachmentIds},
+      body: {
+        'body': body,
+        'attachmentIds': attachmentIds,
+        'clientPublishId': ?clientPublishId,
+      },
     ),
   );
 
@@ -476,9 +547,9 @@ class IonicApi {
       ..headers['Accept'] = 'application/json'
       ..bodyBytes = bytes;
     try {
-      final response = await http.Response.fromStream(
+      final response = await (() async => http.Response.fromStream(
         await _client.send(request),
-      );
+      ))().timeout(const Duration(seconds: 90));
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw _exception(response.statusCode, response.body);
       }
@@ -499,9 +570,9 @@ class IonicApi {
       _uri('media/${Uri.encodeComponent(id)}/file'),
     )..headers['Accept'] = '*/*';
     try {
-      final response = await http.Response.fromStream(
+      final response = await (() async => http.Response.fromStream(
         await _client.send(request),
-      );
+      ))().timeout(const Duration(seconds: 30));
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw _exception(response.statusCode, response.body);
       }
@@ -567,6 +638,10 @@ class IonicApi {
   );
   Future<void> hidePost(String id) async =>
       _request('POST', 'feed/${Uri.encodeComponent(id)}/hide', body: const {});
+  Future<List<JsonMap>> hiddenPosts() async =>
+      jsonItems(await _request('GET', 'feed/hidden'));
+  Future<void> unhidePost(String id) async =>
+      _request('DELETE', 'feed/${Uri.encodeComponent(id)}/hide');
   Future<void> recordVideoSignal(String id, String kind) async => _request(
     'POST',
     'feed/${Uri.encodeComponent(id)}/video-signal',
@@ -574,6 +649,11 @@ class IonicApi {
   );
   Future<bool> feedPaused() async =>
       asJsonMap(await _request('GET', 'feed/settings'))['paused'] == true;
+  Future<bool> recordAttention(List<Map<String, String>> items) async =>
+      asJsonMap(
+        await _request('POST', 'feed/attention', body: {'items': items}),
+      )['status'] !=
+      'paused';
   Future<void> pauseFeed(bool paused) async =>
       _request('PATCH', 'feed/settings', body: {'paused': paused});
   Future<void> resetFeed() async =>
@@ -609,8 +689,17 @@ class IonicApi {
     return MessagePage(
       jsonItems(value).map(ApiMessage.fromJson).toList(growable: false),
       jsonCursor(value),
+      partnerReadAt: asJsonMap(value)['partnerReadAt'] as String?,
+      partnerReadMessageId: asJsonMap(value)['partnerReadMessageId'] as String?,
     );
   }
+
+  Future<void> markConversationRead(String id, String messageId) async =>
+      _request(
+        'POST',
+        'messages/conversations/${Uri.encodeComponent(id)}/read',
+        body: {'lastMessageId': messageId},
+      );
 
   Future<ApiMessage> sendMessage(
     String conversationId,
@@ -683,7 +772,14 @@ class FeedPage {
 }
 
 class MessagePage {
-  const MessagePage(this.items, this.nextCursor);
+  const MessagePage(
+    this.items,
+    this.nextCursor, {
+    this.partnerReadAt,
+    this.partnerReadMessageId,
+  });
   final List<ApiMessage> items;
   final String? nextCursor;
+  final String? partnerReadAt;
+  final String? partnerReadMessageId;
 }

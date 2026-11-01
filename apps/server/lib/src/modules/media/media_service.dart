@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:isolate';
 import 'dart:math';
 import 'dart:typed_data';
@@ -6,6 +5,8 @@ import 'dart:typed_data';
 import 'package:image/image.dart' as img;
 import 'package:ionic_server/src/http/api_exception.dart';
 import 'package:ionic_server/src/modules/database/database_service.dart';
+
+import 'attachment_storage.dart';
 
 const maximumImageBytes = 8 * 1024 * 1024;
 const maximumVoiceBytes = 2 * 1024 * 1024;
@@ -17,16 +18,35 @@ final _uuidPattern = RegExp(
   caseSensitive: false,
 );
 
+bool _uploadInProgress = false;
+
 class MediaService {
-  MediaService(this._database)
-    : _storageDirectory = Directory(
-        Platform.environment['IONIC_ATTACHMENT_DIR'] ?? '.data/attachments',
-      ).absolute;
+  MediaService(this._database, {AttachmentStorage? storage})
+    : _storage = storage ?? AttachmentStorage.fromEnvironment();
 
   final DatabaseService _database;
-  final Directory _storageDirectory;
+  final AttachmentStorage _storage;
 
   Future<Map<String, Object?>> upload(
+    String ownerId,
+    Stream<List<int>> stream,
+    Map<String, String> headers,
+  ) async {
+    if (_uploadInProgress) {
+      throw const ApiException(
+        503,
+        'An attachment is being processed. Try again shortly.',
+      );
+    }
+    _uploadInProgress = true;
+    try {
+      return await _upload(ownerId, stream, headers);
+    } finally {
+      _uploadInProgress = false;
+    }
+  }
+
+  Future<Map<String, Object?>> _upload(
     String ownerId,
     Stream<List<int>> stream,
     Map<String, String> headers,
@@ -94,16 +114,7 @@ class MediaService {
 
     final id = _randomUuid();
     final storageKey = _randomUuid();
-    await _storageDirectory.create(recursive: true);
-    final temporary = File(
-      '${_storageDirectory.path}${Platform.pathSeparator}$storageKey.part',
-    );
-    final target = File(
-      '${_storageDirectory.path}${Platform.pathSeparator}$storageKey',
-    );
     try {
-      await temporary.writeAsBytes(storedBytes, flush: true);
-      await temporary.rename(target.path);
       await _database.query(
         r'''INSERT INTO media_asset
              (id, owner_id, storage_key, media_type, mime_type, byte_size,
@@ -121,9 +132,18 @@ class MediaService {
           durationMs,
         ],
       );
+      // Retain a private staged row before network I/O so interrupted uploads
+      // can expire and enqueue deletion; the opaque ID is returned after write.
+      await _storage.write(storageKey, storedBytes, mimeType);
     } catch (_) {
-      await _deleteIfExists(temporary);
-      await _deleteIfExists(target);
+      try {
+        await _database.query(
+          r"DELETE FROM media_asset WHERE id=$1 AND processing_state='staged'",
+          parameters: [id],
+        );
+      } catch (_) {
+        /* Staging expiry retries if the database is unavailable. */
+      }
       rethrow;
     }
     return _view(
@@ -148,6 +168,7 @@ class MediaService {
          LEFT JOIN content_reply r ON r.id = ca.reply_id AND r.status = 'published'
          JOIN content c ON c.id = COALESCE(ca.content_id, r.content_id)
          JOIN app_user u ON u.id = c.author_id AND u.state = 'active'
+         JOIN app_user asset_owner ON asset_owner.id = a.owner_id AND asset_owner.state = 'active'
          JOIN user_profile p ON p.user_id = u.id
          WHERE a.id = $1 AND a.processing_state = 'ready'
            AND c.visibility = 'public' AND c.status = 'published' AND c.deleted_at IS NULL
@@ -160,6 +181,8 @@ class MediaService {
              SELECT 1 FROM account_block b
              WHERE (b.blocker_id = $2 AND b.blocked_id = u.id)
                 OR (b.blocker_id = u.id AND b.blocked_id = $2)
+                OR (b.blocker_id = $2 AND b.blocked_id = a.owner_id)
+                OR (b.blocker_id = a.owner_id AND b.blocked_id = $2)
            ))''',
       parameters: [inputId, viewerId],
     );
@@ -179,13 +202,11 @@ class MediaService {
     if (size < 1 || size > maximumImageBytes) {
       throw const ApiException(404, 'Attachment was not found.');
     }
-    final file = File(
-      '${_storageDirectory.path}${Platform.pathSeparator}$storageKey',
+    return StoredAttachment(
+      stream: await _storage.read(storageKey, size),
+      mimeType: mimeType,
+      byteSize: size,
     );
-    if (!await file.exists()) {
-      throw const ApiException(404, 'Attachment was not found.');
-    }
-    return StoredAttachment(path: file, mimeType: mimeType, byteSize: size);
   }
 
   Future<void> deleteStaged(String ownerId, String inputId) async {
@@ -205,9 +226,7 @@ class MediaService {
     if (removed == null || !_uuidPattern.hasMatch(removed)) {
       throw const ApiException(404, 'Staged attachment was not found.');
     }
-    await _deleteIfExists(
-      File('${_storageDirectory.path}${Platform.pathSeparator}$removed'),
-    );
+    await _storage.delete(removed);
   }
 
   Future<void> _cleanupExpiredStaging() async {
@@ -228,9 +247,7 @@ class MediaService {
     });
     for (final key in removed) {
       if (_uuidPattern.hasMatch(key)) {
-        await _deleteIfExists(
-          File('${_storageDirectory.path}${Platform.pathSeparator}$key'),
-        );
+        await _storage.delete(key);
       }
     }
   }
@@ -238,12 +255,12 @@ class MediaService {
 
 class StoredAttachment {
   const StoredAttachment({
-    required this.path,
+    required this.stream,
     required this.mimeType,
     required this.byteSize,
   });
 
-  final File path;
+  final Stream<List<int>> stream;
   final String mimeType;
   final int byteSize;
 }
@@ -266,6 +283,9 @@ class StoredAttachment {
           height: oriented.height > oriented.width ? 2048 : null,
         )
       : oriented;
+  normalized.exif = img.ExifData();
+  normalized.iccProfile = null;
+  normalized.textData = null;
   final output = Uint8List.fromList(img.encodeJpg(normalized, quality: 88));
   return (bytes: output, width: normalized.width, height: normalized.height);
 }
@@ -384,12 +404,4 @@ String _randomUuid() {
       .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
       .join();
   return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
-}
-
-Future<void> _deleteIfExists(File file) async {
-  try {
-    if (await file.exists()) await file.delete();
-  } on FileSystemException {
-    // A later staging cleanup can retry a transient local filesystem failure.
-  }
 }
