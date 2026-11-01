@@ -43,6 +43,7 @@ abstract class AttachmentStorage {
   Future<void> write(String key, Uint8List bytes, String mimeType);
   Future<Stream<List<int>>> read(String key, int expectedBytes);
   Future<void> delete(String key);
+  Future<void> verifyConfiguration();
 }
 
 void _checkKey(String key) {
@@ -56,6 +57,8 @@ void _checkKey(String key) {
 class LocalAttachmentStorage implements AttachmentStorage {
   LocalAttachmentStorage(this.root);
   final Directory root;
+  @override
+  Future<void> verifyConfiguration() async {}
   File _file(String key) {
     _checkKey(key);
     return File('${root.path}${Platform.pathSeparator}$key');
@@ -98,6 +101,28 @@ class SupabaseAttachmentStorage implements AttachmentStorage {
   }
   final Uri origin;
   final String secret, bucket;
+  @override
+  Future<void> verifyConfiguration() async {
+    final result = await _request('GET', ['bucket', bucket]);
+    try {
+      final bytes = <int>[];
+      await for (final chunk in result.response.timeout(
+        const Duration(seconds: 20),
+      )) {
+        if (bytes.length + chunk.length > 65536) {
+          throw StateError('Invalid storage metadata.');
+        }
+        bytes.addAll(chunk);
+      }
+      final value = jsonDecode(utf8.decode(bytes));
+      if (value is! Map || value['id'] != bucket || value['public'] != false) {
+        throw StateError('Storage bucket must be private.');
+      }
+    } finally {
+      result.client.close(force: true);
+    }
+  }
+
   Uri _uri(List<String> path) =>
       origin.replace(pathSegments: ['storage', 'v1', ...path]);
   Future<({HttpClient client, HttpClientResponse response})> _request(

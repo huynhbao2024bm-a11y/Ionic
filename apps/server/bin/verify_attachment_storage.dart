@@ -33,6 +33,10 @@ Future<void> main() async {
     } else if (mode == 'redirect') {
       r.response.statusCode = 307;
       r.response.headers.set('location', 'http://127.0.0.1:1/forbidden');
+    } else if (r.uri.path.startsWith('/storage/v1/bucket/')) {
+      r.response.write(
+        jsonEncode({'id': 'ionic-media', 'public': mode == 'public'}),
+      );
     } else if (r.method == 'GET') {
       r.response.contentLength = mode == 'oversize' ? 5 : 4;
       r.response.add(mode == 'oversize' ? [1, 2, 3, 4, 5] : bytes);
@@ -66,6 +70,23 @@ Future<void> main() async {
       'sb_secret_synthetic-verification-only',
       'ionic-media',
     );
+    await cloud.verifyConfiguration();
+    check(
+      requests.last['path'] == '/storage/v1/bucket/ionic-media',
+      'Startup checks actual private bucket',
+    );
+    mode = 'public';
+    var rejected = false;
+    try {
+      await cloud.verifyConfiguration();
+    } on StateError {
+      rejected = true;
+    }
+    check(
+      rejected,
+      'Public bucket fails closed before production HTTP startup',
+    );
+    mode = 'ok';
     await cloud.write(key, bytes, 'image/jpeg');
     check(
       requests.last['method'] == 'POST' &&

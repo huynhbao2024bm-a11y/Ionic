@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:ionic_server/src/app.dart';
 import 'package:ionic_server/src/modules/database/database_service.dart';
+import 'package:ionic_server/src/modules/media/attachment_storage.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:ionic_server/src/modules/recommendation/recommendation_maintenance.dart';
 
@@ -17,6 +18,12 @@ Future<void> main() async {
           .where((origin) => origin.isNotEmpty)
           .toSet();
   final database = DatabaseService.fromEnvironment();
+  if (isProduction) {
+    if (await database.checkReadiness() != DatabaseReadiness.ready) {
+      throw StateError('Database is not ready.');
+    }
+    await AttachmentStorage.fromEnvironment().verifyConfiguration();
+  }
   final maintenance = RecommendationMaintenance(database)..start();
 
   final server = await shelf_io.serve(
