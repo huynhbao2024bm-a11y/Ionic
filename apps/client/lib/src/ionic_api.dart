@@ -40,7 +40,7 @@ String apiErrorText(Object error) {
   if (error is IonicApiException) {
     switch (error.statusCode) {
       case 0:
-        return 'Không kết nối được máy chủ. Kiểm tra API và PostgreSQL.';
+        return 'Chưa kết nối được. Vui lòng thử lại sau ít giây.';
       case 400:
         return 'Dữ liệu chưa hợp lệ hoặc thao tác chưa được hỗ trợ.';
       case 401:
@@ -51,11 +51,13 @@ String apiErrorText(Object error) {
         return 'Không tìm thấy tài khoản hoặc nội dung.';
       case 409:
         return 'Tên tài khoản này đã được sử dụng.';
+      case 429:
+        return 'Bạn đang thao tác quá nhanh. Vui lòng đợi một lát.';
       case 503:
         if (error.code == 'FEED_BUSY') {
           return 'Bảng tin đang cập nhật. Vui lòng thử lại.';
         }
-        return 'Cơ sở dữ liệu chưa sẵn sàng. Dữ liệu chưa được lưu.';
+        return 'Máy chủ tạm thời chưa xử lý được. Vui lòng thử lại.';
     }
     return error.message;
   }

@@ -33,6 +33,7 @@ Thumbs.db
 
 # Flutter platform outputs and local SDK configuration
 android/.gradle/
+android/.kotlin/
 android/local.properties
 android/key.properties
 ios/Flutter/.last_build_id
