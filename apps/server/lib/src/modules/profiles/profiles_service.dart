@@ -9,7 +9,7 @@ import 'package:ionic_server/src/modules/media/media_attachment_service.dart';
 import 'package:postgres/postgres.dart';
 import 'package:unorm_dart/unorm_dart.dart' as unorm;
 
-final _handlePattern = RegExp(r'^[a-z0-9_]{3,24}$');
+final _handlePattern = RegExp(r'^[a-z0-9_-]{3,24}$');
 
 class ProfilesService {
   ProfilesService(this._database);

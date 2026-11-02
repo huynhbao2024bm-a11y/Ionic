@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'ionic_api.dart';
-import 'screens.dart' show PostCard, PostAttachments, ReportDialog;
+import 'screens.dart' show PostCard, ReportDialog;
 import 'account_controls.dart' show EditPostDialog;
-import 'account_avatar.dart';
+import 'comment_row.dart';
 import 'dialogs.dart';
 import 'media_composer.dart';
 
@@ -61,8 +61,10 @@ class PostDetailPage extends StatefulWidget {
     required this.onToast,
     required this.onChanged,
     this.onOpenProfile,
+    this.threadRoot,
     super.key,
   });
+  final FeedPost? threadRoot;
   final IonicApi api;
   final FeedPost initial;
   final String? userId;
@@ -80,6 +82,9 @@ class _PostDetailPageState extends State<PostDetailPage>
   final _text = TextEditingController(), _focus = FocusNode();
   final _scroll = ScrollController();
   List<FeedPost> _replies = [];
+  late FeedPost? _root = widget.threadRoot;
+  FeedPost? _target;
+  bool _threadUnavailable = false;
   String? _cursor, _error, _sendError, _progress;
   bool _loading = true,
       _busy = false,
@@ -123,6 +128,7 @@ class _PostDetailPageState extends State<PostDetailPage>
       _loading = true;
       _error = null;
     });
+    bool readingPost = true;
     try {
       if (!append) {
         final fresh = await widget.api.post(_post.id);
@@ -130,9 +136,22 @@ class _PostDetailPageState extends State<PostDetailPage>
         _post = mergePostSnapshot(_post, fresh);
         widget.onChanged(_post);
       }
+      readingPost = false;
+      if (_root != null && !append) {
+        final roots = await widget.api.syncReplies(_post.id, [
+          _root!.id,
+        ], threaded: true);
+        if (roots.isEmpty) {
+          if (mounted) setState(() => _threadUnavailable = true);
+          return;
+        }
+        _root = roots.single;
+      }
       final page = await widget.api.replies(
         _post.id,
         cursor: append ? _cursor : null,
+        threaded: true,
+        thread: _root?.id,
       );
       if (!mounted) return;
       setState(() {
@@ -150,7 +169,7 @@ class _PostDetailPageState extends State<PostDetailPage>
       if (mounted) {
         setState(() {
           _error = apiErrorText(e);
-          if (e is IonicApiException && e.statusCode == 404) {
+          if (readingPost && e is IonicApiException && e.statusCode == 404) {
             _gone = true;
             widget.onChanged(null);
           }
@@ -161,11 +180,11 @@ class _PostDetailPageState extends State<PostDetailPage>
     }
   }
 
-  Future<void> _sync() async {
+  Future<void> _sync({bool force = false}) async {
     if (!mounted ||
         _syncing ||
         _loading ||
-        _busy ||
+        (!force && _busy) ||
         _sending ||
         _gone ||
         WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed ||
@@ -174,24 +193,45 @@ class _PostDetailPageState extends State<PostDetailPage>
     }
     _syncing = true;
     final revision = _revision;
-    final ids = _replies.take(50).map((p) => p.id).toList();
+    final ids = [
+      if (_root != null) _root!.id,
+      ..._replies.take(_root == null ? 50 : 49).map((p) => p.id),
+    ];
+    bool readingPost = true;
     try {
       final fresh = await widget.api.post(_post.id);
-      final replies = await widget.api.syncReplies(_post.id, ids);
-      if (!mounted || _loading || _busy || _sending || revision != _revision) {
+      readingPost = false;
+      final replies = await widget.api.syncReplies(
+        _post.id,
+        ids,
+        threaded: true,
+      );
+      if (!mounted ||
+          _loading ||
+          (!force && _busy) ||
+          _sending ||
+          revision != _revision) {
         return;
       }
       final byId = {for (final p in replies) p.id: p}, requested = ids.toSet();
+      if (_root != null) {
+        if (!byId.containsKey(_root!.id)) {
+          setState(() => _threadUnavailable = true);
+          return;
+        }
+        if (!samePostSnapshot(_root!, byId[_root!.id]!)) {
+          setState(() => _root = byId[_root!.id]);
+        }
+      }
       final changed =
           !samePostSnapshot(_post, fresh) ||
-          ids.any(
-            (id) =>
-                !byId.containsKey(id) ||
-                !samePostSnapshot(
-                  _replies.firstWhere((p) => p.id == id),
-                  byId[id]!,
-                ),
-          );
+          _replies
+              .where((p) => requested.contains(p.id))
+              .any(
+                (p) =>
+                    !byId.containsKey(p.id) ||
+                    !samePostSnapshot(p, byId[p.id]!),
+              );
       if (changed) {
         setState(() {
           _newReplies = _newReplies || fresh.replyCount > _post.replyCount;
@@ -204,7 +244,10 @@ class _PostDetailPageState extends State<PostDetailPage>
       }
       widget.onChanged(_post);
     } catch (e) {
-      if (mounted && e is IonicApiException && e.statusCode == 404) {
+      if (readingPost &&
+          mounted &&
+          e is IonicApiException &&
+          e.statusCode == 404) {
         setState(() {
           _gone = true;
           widget.onChanged(null);
@@ -290,6 +333,137 @@ class _PostDetailPageState extends State<PostDetailPage>
     }
   }
 
+  void _chooseTarget(FeedPost? reply) {
+    if (_sending || _mediaBusy) return;
+    unawaited(_publication.dispose());
+    _publication = MediaPublication(widget.api);
+    setState(() => _target = reply);
+    _focus.requestFocus();
+  }
+
+  Future<void> _syncAfterSend() async {
+    final ids = _replies.take(50).map((r) => r.id).toList();
+    try {
+      final fresh = await widget.api.syncReplies(_post.id, ids, threaded: true);
+      if (mounted) setState(() => _replies = fresh);
+    } catch (_) {
+      /* Confirmed publication is independent of refresh. */
+    }
+  }
+
+  Future<void> _commentAction(FeedPost reply, {bool delete = false}) async {
+    if (_busy || _sending) return;
+    if (delete) {
+      final yes = await showIonicDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: const Text('Xóa bình luận?'),
+          content: const Text(
+            'Nội dung và tệp đính kèm sẽ bị xóa. Các trả lời khác được giữ lại.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text('Hủy'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text('Xóa'),
+            ),
+          ],
+        ),
+      );
+      if (yes != true || !mounted) return;
+    }
+    _revision++;
+    setState(() => _busy = true);
+    try {
+      if (delete) {
+        await widget.api.deleteReply(_post.id, reply.id);
+        if (mounted) {
+          setState(() {
+            if (_root?.id == reply.id) {
+              if (reply.threadCount > 0) {
+                _root = reply.removedReply;
+              } else {
+                _threadUnavailable = true;
+              }
+            }
+            _replies = _replies
+                .where((r) => r.id != reply.id || r.threadCount > 0)
+                .map((r) => r.id == reply.id ? r.removedReply : r)
+                .toList();
+            if (_target?.id == reply.id) {
+              _target = null;
+              unawaited(_publication.dispose());
+              _publication = MediaPublication(widget.api);
+            }
+          });
+        }
+      } else {
+        final result = await widget.api.setReplyLike(
+          _post.id,
+          reply.id,
+          !reply.liked,
+        );
+        final fresh = reply.withReplyHeart(
+          (result['likeCount'] as num).toInt(),
+          result['liked'] == true,
+        );
+        if (mounted) {
+          setState(() {
+            if (_root?.id == reply.id) _root = fresh;
+            _replies = _replies
+                .map((r) => r.id == reply.id ? fresh : r)
+                .toList();
+          });
+        }
+      }
+      await _sync(force: true);
+    } catch (e) {
+      widget.onToast(apiErrorText(e));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Widget _comment(FeedPost reply, {bool root = false}) => CommentRow(
+    key: ValueKey(reply.id),
+    api: widget.api,
+    reply: reply,
+    signedIn: widget.userId != null,
+    busy: _busy || _sending,
+    onReply: () => _chooseTarget(reply),
+    onHeart: () => _commentAction(reply),
+    onDelete: () => _commentAction(reply, delete: true),
+    onReport: () => _report(reply: reply),
+    onProfile: widget.onOpenProfile == null
+        ? null
+        : () => widget.onOpenProfile!(reply.handle),
+    onThread: _root != null || root
+        ? null
+        : () async {
+            await Navigator.push<void>(
+              context,
+              MaterialPageRoute(
+                builder: (_) => PostDetailPage(
+                  api: widget.api,
+                  initial: _post,
+                  userId: widget.userId,
+                  onToast: widget.onToast,
+                  onChanged: (p) {
+                    if (p != null) _post = p;
+                    widget.onChanged(p);
+                  },
+                  onOpenProfile: widget.onOpenProfile,
+                  threadRoot: reply,
+                ),
+              ),
+            );
+            if (mounted) await _sync();
+          },
+  );
+
   Future<void> _send() async {
     _revision++;
     final body = _text.text.trim();
@@ -307,21 +481,32 @@ class _PostDetailPageState extends State<PostDetailPage>
         body,
         attachmentIds: ids,
         clientPublishId: _publication.id,
+        parentReplyId: (_target ?? _root)?.id,
       );
       if (!mounted) return;
       unawaited(_publication.dispose());
       _publication = MediaPublication(widget.api);
       setState(() {
-        _replies = [reply, ..._replies.where((p) => p.id != reply.id)];
+        if (_root != null || reply.threadRootId == null) {
+          _replies = [reply, ..._replies.where((p) => p.id != reply.id)];
+        }
+        _target = null;
         _text.clear();
         _media = const IonicMediaDraft();
         _mediaKey = UniqueKey();
       });
       _focus.unfocus();
-      final fresh = await widget.api.post(_post.id);
-      if (mounted) {
-        setState(() => _post = mergePostSnapshot(_post, fresh));
-        widget.onChanged(_post);
+      try {
+        final fresh = await widget.api.post(_post.id);
+        if (mounted) {
+          setState(() => _post = mergePostSnapshot(_post, fresh));
+          widget.onChanged(_post);
+        }
+      } catch (_) {
+        widget.onToast('Bình luận đã gửi. Chưa làm mới được số bình luận.');
+      }
+      if (mounted && reply.threadRootId != null && _root == null) {
+        await _syncAfterSend();
       }
     } catch (e) {
       if (mounted) setState(() => _sendError = apiErrorText(e));
@@ -332,14 +517,20 @@ class _PostDetailPageState extends State<PostDetailPage>
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Bài viết')),
+    appBar: AppBar(
+      title: Text(_root == null ? 'Bài viết' : 'Trả lời bình luận'),
+    ),
     body: Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 720),
         child: Column(
           children: [
             Expanded(
-              child: _gone
+              child: _threadUnavailable
+                  ? const Center(
+                      child: Text('Luồng bình luận không còn khả dụng.'),
+                    )
+                  : _gone
                   ? const Center(child: Text('Bài viết không còn khả dụng.'))
                   : RefreshIndicator(
                       onRefresh: () => _load(),
@@ -352,26 +543,31 @@ class _PostDetailPageState extends State<PostDetailPage>
                             return Column(
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
-                                PostCard(
-                                  recommendationControls: false,
-                                  post: _post,
-                                  api: widget.api,
-                                  isOwn: _post.authorId == widget.userId,
-                                  busy: _busy,
-                                  onOpen: () {},
-                                  onOpenProfile: widget.onOpenProfile == null
-                                      ? null
-                                      : () {
-                                          if (widget.onOpenProfile != null) {
-                                            widget.onOpenProfile!(_post.handle);
-                                            Navigator.pop(context);
-                                          }
-                                        },
-                                  onLike: () => _react(true),
-                                  onSave: () => _react(false),
-                                  onReply: () => _focus.requestFocus(),
-                                  onMenu: _menu,
-                                ),
+                                if (_root != null)
+                                  _comment(_root!, root: true)
+                                else
+                                  PostCard(
+                                    recommendationControls: false,
+                                    post: _post,
+                                    api: widget.api,
+                                    isOwn: _post.authorId == widget.userId,
+                                    busy: _busy,
+                                    onOpen: () {},
+                                    onOpenProfile: widget.onOpenProfile == null
+                                        ? null
+                                        : () {
+                                            if (widget.onOpenProfile != null) {
+                                              widget.onOpenProfile!(
+                                                _post.handle,
+                                              );
+                                              Navigator.pop(context);
+                                            }
+                                          },
+                                    onLike: () => _react(true),
+                                    onSave: () => _react(false),
+                                    onReply: () => _focus.requestFocus(),
+                                    onMenu: _menu,
+                                  ),
                                 if (_loading) const LinearProgressIndicator(),
                                 if (_error != null)
                                   ListTile(
@@ -384,7 +580,7 @@ class _PostDetailPageState extends State<PostDetailPage>
                                 Padding(
                                   padding: const EdgeInsets.all(16),
                                   child: Text(
-                                    'Bình luận',
+                                    _root == null ? 'Bình luận' : 'Trả lời',
                                     style: Theme.of(
                                       context,
                                     ).textTheme.titleMedium,
@@ -416,64 +612,12 @@ class _PostDetailPageState extends State<PostDetailPage>
                                   );
                           }
                           final reply = _replies[index - 1];
-                          return Padding(
-                            key: ValueKey(reply.id),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 14,
-                            ),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                AccountAvatar(
-                                  api: widget.api,
-                                  name: reply.displayName,
-                                  mediaId: reply.authorAvatarId,
-                                  size: 36,
-                                ),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        reply.displayName,
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                      Text(
-                                        '@${reply.handle}',
-                                        style: Theme.of(
-                                          context,
-                                        ).textTheme.bodySmall,
-                                      ),
-                                      const SizedBox(height: 6),
-                                      SelectableText(reply.body),
-                                      if (reply.attachments.isNotEmpty)
-                                        PostAttachments(
-                                          api: widget.api,
-                                          attachments: reply.attachments,
-                                        ),
-                                    ],
-                                  ),
-                                ),
-                                if (widget.userId != null &&
-                                    reply.authorId != widget.userId)
-                                  IconButton(
-                                    tooltip: 'Báo cáo bình luận',
-                                    onPressed: () => _report(reply: reply),
-                                    icon: const Icon(Icons.more_horiz),
-                                  ),
-                              ],
-                            ),
-                          );
+                          return _comment(reply);
                         },
                       ),
                     ),
             ),
-            if (!_gone && widget.userId == null)
+            if (!_gone && !_threadUnavailable && widget.userId == null)
               const SafeArea(
                 top: false,
                 child: Padding(
@@ -493,6 +637,21 @@ class _PostDetailPageState extends State<PostDetailPage>
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        if (_target != null)
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text('Trả lời @${_target!.handle}'),
+                              ),
+                              IconButton(
+                                tooltip: 'Hủy trả lời',
+                                onPressed: _sending
+                                    ? null
+                                    : () => _chooseTarget(null),
+                                icon: const Icon(Icons.close_rounded),
+                              ),
+                            ],
+                          ),
                         Row(
                           children: [
                             Expanded(
@@ -515,7 +674,9 @@ class _PostDetailPageState extends State<PostDetailPage>
                               onPressed:
                                   _sending ||
                                       _mediaBusy ||
-                                      _text.text.trim().isEmpty
+                                      _text.text.trim().isEmpty ||
+                                      (_root?.removed == true &&
+                                          _target == null)
                                   ? null
                                   : _send,
                               icon: _sending

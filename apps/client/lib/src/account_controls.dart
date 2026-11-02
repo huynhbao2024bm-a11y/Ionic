@@ -1,3 +1,4 @@
+import 'password_field.dart';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
@@ -456,28 +457,18 @@ class _CredentialActionDialogState extends State<CredentialActionDialog> {
                       (v ?? '').isEmpty ? 'Nhập mật khẩu hiện tại.' : null,
                 ),
                 if (widget.action == 'password') ...[
-                  TextFormField(
+                  PasswordField(
                     controller: _newPassword,
                     enabled: !_busy,
-                    obscureText: true,
-                    autocorrect: false,
-                    enableSuggestions: false,
                     maxLength: 128,
-                    decoration: const InputDecoration(
-                      labelText: 'Mật khẩu mới',
-                    ),
+                    label: 'Mật khẩu mới',
                     validator: (v) =>
                         (v ?? '').length < 12 ? 'Cần ít nhất 12 ký tự.' : null,
                   ),
-                  TextFormField(
+                  PasswordField(
                     controller: _confirm,
                     enabled: !_busy,
-                    obscureText: true,
-                    autocorrect: false,
-                    enableSuggestions: false,
-                    decoration: const InputDecoration(
-                      labelText: 'Nhập lại mật khẩu mới',
-                    ),
+                    label: 'Nhập lại mật khẩu mới',
                     validator: (v) => v != _newPassword.text
                         ? 'Hai mật khẩu chưa khớp.'
                         : null,
@@ -584,7 +575,7 @@ class _RecoveryDialogState extends State<RecoveryDialog> {
                   autocorrect: false,
                   decoration: const InputDecoration(labelText: 'Tên tài khoản'),
                   validator: (v) =>
-                      RegExp(r'^[a-zA-Z0-9_]{3,24}$').hasMatch(v?.trim() ?? '')
+                      RegExp(r'^[a-zA-Z0-9_-]{3,24}$').hasMatch(v?.trim() ?? '')
                       ? null
                       : 'Nhập tên tài khoản.',
                 ),

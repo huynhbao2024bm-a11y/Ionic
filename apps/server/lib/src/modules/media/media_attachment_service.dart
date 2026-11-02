@@ -132,6 +132,14 @@ Future<List<Map<String, Object?>>> attachmentsForReply(
 ) async =>
     (await replyAttachmentViews(database, [replyId]))[replyId] ?? const [];
 
+Future<void> removeReplyMedia(TxSession tx, String replyId) async {
+  await tx.execute(
+    r'''DELETE FROM media_asset WHERE id IN(
+    SELECT media_asset_id FROM content_attachment WHERE reply_id=$1)''',
+    parameters: [replyId],
+  );
+}
+
 /// Profiles coordinates the transaction; Media owns staged-image validation.
 Future<void> claimAvatarImage(TxSession tx, String ownerId, String id) async {
   final rows = await tx.execute(

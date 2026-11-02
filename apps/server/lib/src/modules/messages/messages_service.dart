@@ -13,7 +13,7 @@ final _uuidPattern = RegExp(
   r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
   caseSensitive: false,
 );
-final _handlePattern = RegExp(r'^[a-z0-9_]{3,24}$');
+final _handlePattern = RegExp(r'^[a-z0-9_-]{3,24}$');
 
 class _MessageCursor {
   const _MessageCursor({required this.createdAt, required this.id});

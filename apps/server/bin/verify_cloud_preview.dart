@@ -117,7 +117,7 @@ Future<void> main(List<String> args) async {
       'Live readiness includes database',
     );
     for (var i = 0; i < 2; i++) {
-      final handle = 'ionic_check_${_randomHex(4)}123',
+      final handle = 'ionic-check-${_randomHex(4)}123',
           password = 'Aa1!${_randomHex(24)}';
       final r = await request(
         'POST',
@@ -518,6 +518,129 @@ Future<void> main(List<String> args) async {
     check(
       (await request('GET', 'media/$voiceId/file')).status == 404,
       'Guest voice access denied',
+    );
+    final rootId = '${reply['id']}';
+    final childInput = {
+      'body': 'Trả lời trong luồng riêng.',
+      'parentReplyId': rootId,
+      'clientPublishId': _uuid(),
+    };
+    final child = await json(
+      'POST',
+      'posts/$postId/replies',
+      cookie: a.cookie,
+      body: childInput,
+      expected: 201,
+    );
+    check(
+      child['parentReplyId'] == rootId && child['threadRootId'] == rootId,
+      'Live parent/root association',
+    );
+    check(
+      (await json(
+            'POST',
+            'posts/$postId/replies',
+            cookie: a.cookie,
+            body: childInput,
+            expected: 201,
+          ))['id'] ==
+          child['id'],
+      'Live thread retry stable',
+    );
+    final roots = await json(
+      'GET',
+      'posts/$postId/replies?threaded=true',
+      cookie: a.cookie,
+    );
+    check(
+      (roots['items'] as List).length == 1 &&
+          ((roots['items'] as List).single as Map)['threadCount'] == 1,
+      'Live threaded root/count',
+    );
+    final children = await json(
+      'GET',
+      'posts/$postId/replies?threaded=true&thread=$rootId',
+      cookie: b.cookie,
+    );
+    check((children['items'] as List).length == 1, 'Live thread read');
+    for (var i = 0; i < 2; i++) {
+      check(
+        (await json(
+              'POST',
+              'posts/$postId/replies/$rootId/like',
+              cookie: a.cookie,
+              body: {},
+              expected: 201,
+            ))['likeCount'] ==
+            1,
+        'Live heart idempotent',
+      );
+    }
+    check(
+      (await request(
+            'POST',
+            'posts/$postId/replies/$rootId/like',
+            body: {},
+          )).status ==
+          401,
+      'Live guest cannot heart',
+    );
+    check(
+      (await json(
+            'DELETE',
+            'posts/$postId/replies/$rootId/like',
+            cookie: a.cookie,
+          ))['likeCount'] ==
+          0,
+      'Live unheart',
+    );
+    await json('DELETE', 'posts/$postId/replies/$rootId', cookie: a.cookie);
+    final removed =
+        (await json(
+              'POST',
+              'posts/$postId/replies/sync',
+              cookie: b.cookie,
+              body: {
+                'ids': [rootId],
+                'threaded': true,
+              },
+            ))['items']
+            as List;
+    check(
+      removed.length == 1 &&
+          (removed.single as Map)['removed'] == true &&
+          (removed.single as Map)['authorId'] == '',
+      'Live post owner deletion redacts root and retains thread',
+    );
+    check(
+      (await request('GET', 'media/$voiceId/file', cookie: b.cookie)).status ==
+          404,
+      'Live deleted comment voice revoked',
+    );
+    check(
+      (await request(
+            'POST',
+            'posts/$postId/replies/$rootId/like',
+            cookie: b.cookie,
+            body: {},
+          )).status ==
+          404,
+      'Live removed comment cannot be liked',
+    );
+    await json(
+      'DELETE',
+      'posts/$postId/replies/${child['id']}',
+      cookie: a.cookie,
+    );
+    check(
+      ((await json(
+                'GET',
+                'posts/$postId/replies?threaded=true',
+                cookie: b.cookie,
+              ))['items']
+              as List)
+          .isEmpty,
+      'Live empty tombstone omitted',
     );
     final c = await json(
       'POST',

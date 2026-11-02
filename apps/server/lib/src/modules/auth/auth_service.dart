@@ -29,7 +29,7 @@ final _fakeSalt = Uint8List.fromList(
 final _fakeHash = Uint8List.fromList(
   List<int>.filled(_passwordHashLength, 0x6f),
 );
-final _handlePattern = RegExp(r'^[a-z0-9_]{3,24}$');
+final _handlePattern = RegExp(r'^[a-z0-9_-]{3,24}$');
 
 class AuthenticatedUser {
   const AuthenticatedUser({
@@ -163,7 +163,7 @@ void _requireOnlyKeys(Map<String, Object?> input, List<String> allowed) {
       handleError,
       code: handle.contains('admin')
           ? 'HANDLE_RESERVED'
-          : RegExp(r'^[a-z0-9_]{3,24}$').hasMatch(handle)
+          : RegExp(r'^[a-z0-9_-]{3,24}$').hasMatch(handle)
           ? 'HANDLE_DIGITS_REQUIRED'
           : 'HANDLE_INVALID',
     );

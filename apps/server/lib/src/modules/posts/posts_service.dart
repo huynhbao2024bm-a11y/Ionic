@@ -1,6 +1,7 @@
 import 'package:ionic_server/src/modules/trust/text_policy.dart';
 
 import 'dart:convert';
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -16,11 +17,13 @@ import 'package:ionic_server/src/modules/recommendation/types.dart';
 import 'package:postgres/postgres.dart';
 import 'package:unorm_dart/unorm_dart.dart' as unorm;
 
+part 'post_comments.dart';
+
 final _postUuidPattern = RegExp(
   r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
   caseSensitive: false,
 );
-final _handlePattern = RegExp(r'^[a-z0-9_]{3,24}$');
+final _handlePattern = RegExp(r'^[a-z0-9_-]{3,24}$');
 
 class _PostsCursor {
   const _PostsCursor({required this.createdAt, required this.id});
@@ -531,175 +534,6 @@ class PostsService {
         }
       }
       return {'saved': saved};
-    });
-  }
-
-  Future<Map<String, Object?>> addReply(
-    String viewerId,
-    String inputContentId,
-    Map<String, Object?> input,
-  ) async {
-    final contentId = _parseContentId(inputContentId);
-    if (input.keys.any(
-          (key) => !['body', 'attachmentIds', 'clientPublishId'].contains(key),
-        ) ||
-        input['body'] is! String) {
-      throw const ApiException(400, 'Reply body is invalid.');
-    }
-    final attachmentIds = parseAttachmentIds(input['attachmentIds']);
-    final body = unorm.nfc((input['body'] as String).trim());
-    requireLinkFree(body);
-    if (body.isEmpty || body.length > 500) {
-      throw const ApiException(400, 'Reply must contain 1–500 characters.');
-    }
-    final id = input.containsKey('clientPublishId')
-        ? _parseContentId('${input['clientPublishId']}')
-        : _randomUuid();
-    final createdReply = await _database.transaction((transaction) async {
-      await _assertCanInteract(transaction, viewerId, contentId);
-      await transaction.execute(
-        r'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
-        parameters: ['reply:$id'],
-      );
-      final previous = await transaction.execute(
-        r'SELECT id, author_id, body, created_at, content_id FROM content_reply WHERE id = $1',
-        parameters: [id],
-      );
-      if (previous.isNotEmpty) {
-        final row = previous.first.toColumnMap();
-        if ('${row['content_id']}' != contentId) {
-          throw const ApiException(409, 'Publish ID has already been used.');
-        }
-        await _checkPublishRetry(
-          transaction,
-          row,
-          viewerId,
-          body,
-          id,
-          true,
-          attachmentIds,
-        );
-        final author = await transaction.execute(
-          r'SELECT u.handle, p.display_name FROM app_user u JOIN user_profile p ON p.user_id = u.id WHERE u.id = $1',
-          parameters: [viewerId],
-        );
-        return <String, Object?>{
-          'id': '${row['id']}',
-          'authorId': viewerId,
-          'authorHandle': '${author.first[0]}',
-          'authorDisplayName': '${author.first[1]}',
-          'body': body,
-          'createdAt': _dateTime(row['created_at']).toUtc().toIso8601String(),
-        };
-      }
-      final inserted = await transaction.execute(
-        r'''INSERT INTO content_reply(id, content_id, author_id, body)
-            SELECT $1, $2, u.id, $4 FROM app_user u JOIN user_profile p ON p.user_id = u.id
-            WHERE u.id = $3 AND u.state = 'active'
-            RETURNING id, author_id, body, created_at''',
-        parameters: [id, contentId, viewerId, body],
-      );
-      if (inserted.isEmpty) {
-        throw const ApiException(404, 'Account was not found.');
-      }
-      await attachStagedMedia(
-        transaction: transaction,
-        ownerId: viewerId,
-        parentId: id,
-        isReply: true,
-        attachmentIds: attachmentIds,
-      );
-      final created = inserted.first.toColumnMap();
-      final author = await transaction.execute(
-        r'''SELECT u.handle, p.display_name FROM app_user u
-            JOIN user_profile p ON p.user_id = u.id WHERE u.id = $1''',
-        parameters: [created['author_id']],
-      );
-      if (author.isEmpty) {
-        throw const ApiException(404, 'Account was not found.');
-      }
-      final authorProfile = author.first.toColumnMap();
-      await _signals.recordContentAction(
-        transaction: transaction,
-        userId: viewerId,
-        contentId: contentId,
-        actionId: id,
-        kind: PreferenceSignalKind.comment,
-      );
-      final count = await transaction.execute(
-        r'''SELECT count(*)::int AS reply_count FROM content_reply
-            WHERE content_id = $1 AND status = 'published' ''',
-        parameters: [contentId],
-      );
-      return {
-        'id': '${created['id']}',
-        'authorId': '${created['author_id']}',
-        'authorHandle': '${authorProfile['handle']}',
-        'authorDisplayName': '${authorProfile['display_name']}',
-        'body': '${created['body']}',
-        'createdAt': _dateTime(created['created_at']).toUtc().toIso8601String(),
-        'replyCount': (count.first.toColumnMap()['reply_count'] as num).toInt(),
-      };
-    });
-    createdReply['attachments'] = await attachmentsForReply(_database, id);
-    return createdReply;
-  }
-
-  Future<Map<String, Object?>> listReplies(
-    String? viewerId,
-    String inputContentId,
-    int limit,
-    String? cursorInput, {
-    List<String>? ids,
-  }) async {
-    final contentId = _parseContentId(inputContentId);
-    final cursor = _parsePostsCursor(cursorInput);
-    return _database.transaction((transaction) async {
-      await _assertCanInteract(transaction, viewerId, contentId);
-      final result = await transaction.execute(
-        r'''SELECT r.id, r.author_id, u.handle AS author_handle,
-                  p.display_name AS author_display_name, p.avatar_media_id AS author_avatar_id, r.body, r.created_at
-           FROM content_reply r
-           JOIN app_user u ON u.id = r.author_id AND u.state = 'active'
-           JOIN user_profile p ON p.user_id = u.id
-           WHERE r.content_id = $1 AND r.status = 'published'
-             AND ($6::uuid[] IS NULL OR r.id=ANY($6::uuid[]))
-             AND NOT EXISTS (SELECT 1 FROM account_block b WHERE
-               (b.blocker_id = $5 AND b.blocked_id = r.author_id) OR (b.blocker_id = r.author_id AND b.blocked_id = $5))
-             AND ($2::timestamptz IS NULL OR (r.created_at, r.id) < ($2::timestamptz, $3::uuid))
-           ORDER BY r.created_at DESC, r.id DESC LIMIT $4''',
-        parameters: [
-          contentId,
-          cursor?.createdAt,
-          cursor?.id,
-          limit + 1,
-          viewerId,
-          ids,
-        ],
-      );
-      final page = _pageRows(result, limit);
-      final attachmentViews = await replyAttachmentViews(
-        _database,
-        page.rows.map((row) => '${row.toColumnMap()['id']}').toList(),
-        transaction: transaction,
-      );
-      final items = page.rows.map((row) {
-        final value = row.toColumnMap();
-        return <String, Object?>{
-          'id': '${value['id']}',
-          'authorId': '${value['author_id']}',
-          'authorHandle': '${value['author_handle']}',
-          'authorDisplayName': '${value['author_display_name']}',
-          'authorAvatarId': value['author_avatar_id'],
-          'body': '${value['body']}',
-          'attachments': attachmentViews['${value['id']}'] ?? const [],
-          'createdAt': _dateTime(value['created_at']).toUtc().toIso8601String(),
-        };
-      }).toList();
-      return {
-        'items': items,
-        'nextCursor': _nextCursor(page.rows, page.hasMore),
-      };
     });
   }
 

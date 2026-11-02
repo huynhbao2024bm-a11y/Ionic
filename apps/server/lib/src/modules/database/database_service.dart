@@ -27,6 +27,7 @@ const _requiredMigrations = <String>[
   '0020_content_moderation.sql',
   '0021_preview_heartbeat.sql',
   '0022_preview_heartbeat_leases.sql',
+  '0023_comment_threads_hearts_handle_hyphens.sql',
 ];
 
 class DatabaseService {

@@ -1,3 +1,5 @@
+import 'home_search.dart';
+import 'profile_editor.dart';
 // The voice player uses just_audio's current in-memory stream API.
 // ignore_for_file: experimental_member_use
 
@@ -26,6 +28,7 @@ class HomeScreen extends StatefulWidget {
     required this.api,
     required this.user,
     required this.refreshToken,
+    this.searchController,
     required this.onAuthenticate,
     required this.onCompose,
     required this.onOpenProfile,
@@ -36,6 +39,7 @@ class HomeScreen extends StatefulWidget {
   final IonicApi api;
   final ApiUser? user;
   final int refreshToken;
+  final HomeSearchController? searchController;
   final Future<void> Function({required String mode}) onAuthenticate;
   final VoidCallback onCompose;
   final ValueChanged<String> onOpenProfile;
@@ -46,7 +50,42 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
-  final _feedViewport = GlobalKey();
+  final _feedViewport = GlobalKey(), _searchKey = GlobalKey();
+  final _feedScroll = ScrollController();
+  double _searchBottom = 90;
+  bool _searchScheduled = false;
+  void _searchScrolled() {
+    if (_searchScheduled) return;
+    _searchScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _searchScheduled = false;
+      if (!mounted || !_feedScroll.hasClients) return;
+      final box = _searchKey.currentContext?.findRenderObject(),
+          viewport = _feedViewport.currentContext?.findRenderObject();
+      if (box is RenderBox &&
+          box.attached &&
+          viewport is RenderBox &&
+          viewport.attached) {
+        _searchBottom =
+            box.localToGlobal(Offset(0, box.size.height)).dy -
+            viewport.localToGlobal(Offset.zero).dy +
+            _feedScroll.offset;
+      }
+      widget.searchController?.setCompact(_feedScroll.offset >= _searchBottom);
+    });
+  }
+
+  Future<void> _openSearch() async {
+    if (_feedScroll.hasClients) {
+      await _feedScroll.animateTo(
+        0,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+      );
+    }
+    if (mounted) _searchFocus.requestFocus();
+  }
+
   late final FeedAttentionController _attention;
   final _search = TextEditingController();
   final _searchFocus = FocusNode();
@@ -74,6 +113,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _syncTimer = Timer.periodic(const Duration(seconds: 45), (_) => _sync());
     _searchFocus.addListener(_searchFocusChanged);
+    _feedScroll.addListener(_searchScrolled);
+    widget.searchController?.open = _openSearch;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _searchScrolled();
+    });
     _loadHistory();
     _attention = FeedAttentionController(
       viewportKey: _feedViewport,
@@ -120,6 +164,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _syncTimer?.cancel();
     _attention.dispose();
+    if (widget.searchController?.open == _openSearch) {
+      widget.searchController?.open = null;
+    }
+    _feedScroll.dispose();
     _searchDelay?.cancel();
     _searchFocus.removeListener(_searchFocusChanged);
     _searchFocus.dispose();
@@ -596,10 +644,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   : _load(),
               child: ListView(
                 key: _feedViewport,
+                controller: _feedScroll,
                 padding: const EdgeInsets.fromLTRB(0, 10, 0, 34),
                 children: [
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
+                    key: _searchKey,
                     child: TextField(
                       controller: _search,
                       focusNode: _searchFocus,
@@ -642,7 +692,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     const SizedBox(height: 16),
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: _ComposerEntry(onTap: widget.onCompose),
+                      child: _ComposerEntry(
+                        api: widget.api,
+                        user: widget.user,
+                        onTap: widget.onCompose,
+                      ),
                     ),
                     if (_error != null)
                       _ErrorCard(message: _error!, onRetry: _load),
@@ -1560,39 +1614,56 @@ class _Avatar extends StatelessWidget {
 }
 
 class _ComposerEntry extends StatelessWidget {
-  const _ComposerEntry({required this.onTap});
+  const _ComposerEntry({
+    required this.api,
+    required this.user,
+    required this.onTap,
+  });
+  final IonicApi api;
+  final ApiUser? user;
   final VoidCallback onTap;
   @override
-  Widget build(BuildContext context) => Card(
-    child: InkWell(
-      borderRadius: BorderRadius.circular(20),
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
-        child: Row(
-          children: [
-            const _Avatar(name: 'I', size: 42),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                'Chia sẻ điều bạn đang nghĩ...',
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-            ),
-            IconButton.filled(
-              style: IconButton.styleFrom(
-                backgroundColor: Theme.of(context).brightness == Brightness.dark
-                    ? const Color(0xff34383f)
-                    : Theme.of(context).colorScheme.primary,
-                foregroundColor: Colors.white,
-              ),
-              tooltip: 'Tạo bài viết',
-              onPressed: onTap,
-              icon: const Icon(Icons.add_rounded),
-            ),
-          ],
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 14),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        AccountAvatar(
+          api: api,
+          name: user?.displayName ?? 'Ionic',
+          mediaId: user?.avatarMediaId,
+          size: 44,
         ),
-      ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Material(
+            color: Theme.of(context).colorScheme.surfaceContainerHigh,
+            borderRadius: BorderRadius.circular(18),
+            child: InkWell(
+              onTap: onTap,
+              borderRadius: BorderRadius.circular(18),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 17,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Chia sẻ điều bạn đang nghĩ…',
+                        style: Theme.of(context).textTheme.bodyLarge,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    const Icon(Icons.edit_outlined, size: 22),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     ),
   );
 }
@@ -2252,7 +2323,12 @@ class _VideoScreenState extends State<VideoScreen> {
     child: ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 920),
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(22, 10, 22, 34),
+        padding: EdgeInsets.fromLTRB(
+          MediaQuery.sizeOf(context).width < 500 ? 16 : 24,
+          10,
+          MediaQuery.sizeOf(context).width < 500 ? 16 : 24,
+          34,
+        ),
         children: [
           Row(
             children: [
@@ -3238,17 +3314,24 @@ class _MessagesScreenState extends State<MessagesScreen>
               IconButton(
                 tooltip: 'Tin nhắn mới',
                 onPressed: _starting ? null : _newConversation,
+                style: IconButton.styleFrom(
+                  backgroundColor: Theme.of(
+                    context,
+                  ).colorScheme.surfaceContainerHigh,
+                  padding: const EdgeInsets.all(14),
+                ),
                 icon: const Icon(Icons.edit_square),
               ),
             ],
           ),
         ),
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 14),
+          padding: const EdgeInsets.fromLTRB(20, 14, 20, 18),
           child: TextField(
             onChanged: (v) => setState(() => _inboxQuery = v),
             decoration: const InputDecoration(
               hintText: 'Tìm cuộc trò chuyện',
+              filled: true,
               prefixIcon: Icon(Icons.search_rounded),
               isDense: true,
               border: OutlineInputBorder(
@@ -3280,7 +3363,7 @@ class _MessagesScreenState extends State<MessagesScreen>
               onRefresh: _loadConversations,
               child: ListView.builder(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.symmetric(horizontal: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 10),
                 itemCount: items.isEmpty ? 1 : items.length,
                 itemBuilder: (context, index) {
                   if (items.isEmpty) {
@@ -3311,6 +3394,10 @@ class _MessagesScreenState extends State<MessagesScreen>
                       borderRadius: BorderRadius.circular(18),
                     ),
                     selected: widget.conversationId == c.id,
+                    selectedTileColor: Theme.of(
+                      context,
+                    ).colorScheme.surfaceContainerHigh,
+                    minVerticalPadding: 14,
                     contentPadding: const EdgeInsets.symmetric(
                       horizontal: 10,
                       vertical: 6,
@@ -3326,6 +3413,7 @@ class _MessagesScreenState extends State<MessagesScreen>
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
+                        fontSize: 17,
                         fontWeight: unread ? FontWeight.w800 : FontWeight.w600,
                       ),
                     ),
@@ -3350,6 +3438,10 @@ class _MessagesScreenState extends State<MessagesScreen>
                         ),
                         if (unread)
                           Badge(
+                            backgroundColor: Theme.of(
+                              context,
+                            ).colorScheme.onSurface,
+                            textColor: Theme.of(context).colorScheme.surface,
                             label: Text(
                               c.unreadCount > 99
                                   ? '99+'
@@ -3415,11 +3507,20 @@ class _MessagesScreenState extends State<MessagesScreen>
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: Text(
-                  widget.conversationName ?? 'Trò chuyện',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      widget.conversationName ?? 'Trò chuyện',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    Text(
+                      c == null ? 'Tin nhắn riêng tư' : '@${c.partnerHandle}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
                 ),
               ),
               IconButton(
@@ -3514,13 +3615,25 @@ class _MessagesScreenState extends State<MessagesScreen>
                                       ),
                                       decoration: BoxDecoration(
                                         color: own
-                                            ? scheme.surfaceContainerHighest
-                                            : scheme.surfaceContainerLow,
+                                            ? (Theme.of(context).brightness ==
+                                                      Brightness.dark
+                                                  ? const Color(0xff3b424d)
+                                                  : const Color(0xffdfe5ed))
+                                            : scheme.surfaceContainerHigh,
                                         border: Border.all(
                                           color: scheme.outlineVariant
                                               .withValues(alpha: .35),
                                         ),
-                                        borderRadius: BorderRadius.circular(22),
+                                        borderRadius: BorderRadius.only(
+                                          topLeft: const Radius.circular(20),
+                                          topRight: const Radius.circular(20),
+                                          bottomLeft: Radius.circular(
+                                            !own && lastInGroup ? 6 : 20,
+                                          ),
+                                          bottomRight: Radius.circular(
+                                            own && lastInGroup ? 6 : 20,
+                                          ),
+                                        ),
                                       ),
                                       child: Text(
                                         item.body,
@@ -3988,139 +4101,135 @@ class _ProfileScreenState extends State<ProfileScreen> {
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 900),
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(22, 10, 22, 34),
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 34),
           children: [
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(22),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        if (profile.isSelf)
-                          SizedBox(
-                            width: 132,
-                            child: AvatarEditor(
-                              api: widget.api,
-                              name: profile.displayName,
-                              mediaId: profile.avatarMediaId,
-                              onSaved: (id) async {
-                                final user = await widget.api.currentUser();
-                                if (!mounted) return;
-                                widget.onProfileChanged?.call(user);
-                                await _load();
-                              },
-                            ),
-                          )
-                        else
-                          AccountAvatar(
-                            api: widget.api,
-                            name: profile.displayName,
-                            mediaId: profile.avatarMediaId,
-                            size: 76,
-                          ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                profile.displayName,
-                                style: Theme.of(
-                                  context,
-                                ).textTheme.headlineMedium,
-                              ),
-                              Text(
-                                '@${profile.handle}',
-                                style: Theme.of(context).textTheme.bodyMedium,
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (profile.isSelf)
-                          IconButton(
-                            tooltip: 'Làm mới hồ sơ',
-                            onPressed: _load,
-                            icon: const Icon(Icons.refresh_rounded),
-                          ),
-                      ],
-                    ),
-                    if (profile.bio.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 16),
-                        child: Text(
-                          profile.bio,
-                          style: Theme.of(context).textTheme.bodyLarge,
-                        ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(0, 12, 0, 22),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Wrap(
+                    alignment: WrapAlignment.spaceBetween,
+                    spacing: 16,
+                    runSpacing: 14,
+                    children: [
+                      AccountAvatar(
+                        api: widget.api,
+                        name: profile.displayName,
+                        mediaId: profile.avatarMediaId,
+                        size: 88,
                       ),
-                    const SizedBox(height: 16),
-                    Wrap(
-                      spacing: 20,
-                      runSpacing: 8,
-                      children: [
-                        Text('${profile.postCount} bài viết'),
-                        TextButton(
-                          onPressed: () => _connections('followers'),
-                          child: Text(
-                            '${profile.followerCount} người theo dõi',
-                          ),
+                      if (profile.isSelf)
+                        OutlinedButton.icon(
+                          onPressed: _working
+                              ? null
+                              : () async {
+                                  await showIonicDialog<bool>(
+                                    context: context,
+                                    builder: (_) => ProfileEditor(
+                                      api: widget.api,
+                                      profile: profile,
+                                      onChanged: (user) =>
+                                          widget.onProfileChanged?.call(user),
+                                    ),
+                                  );
+                                  if (mounted) await _load();
+                                },
+                          icon: const Icon(Icons.edit_outlined, size: 18),
+                          label: const Text('Sửa hồ sơ'),
                         ),
-                        TextButton(
-                          onPressed: () => _connections('following'),
-                          child: Text(
-                            '${profile.followingCount} đang theo dõi',
-                          ),
-                        ),
-                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  Text(
+                    profile.displayName,
+                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -.6,
                     ),
-                    if (!profile.isSelf) ...[
-                      const SizedBox(height: 16),
-                      Wrap(
-                        spacing: 9,
-                        runSpacing: 9,
-                        children: [
-                          FilledButton(
-                            onPressed: _working ? null : _follow,
-                            child: Text(
-                              profile.isFollowing
-                                  ? 'Đang theo dõi'
-                                  : 'Theo dõi',
-                            ),
-                          ),
-                          OutlinedButton.icon(
-                            onPressed: _working ? null : _message,
-                            icon: const Icon(Icons.chat_bubble_outline_rounded),
-                            label: const Text('Nhắn tin'),
-                          ),
-                          PopupMenuButton<String>(
-                            tooltip: 'Tùy chọn tài khoản',
-                            onSelected: (value) {
-                              if (value == 'mute') _mute();
-                              if (value == 'block') _block();
-                            },
-                            itemBuilder: (_) => [
-                              PopupMenuItem(
-                                value: 'mute',
-                                child: Text(
-                                  profile.isMuted
-                                      ? 'Bật lại nội dung'
-                                      : 'Tắt tiếng',
-                                ),
-                              ),
-                              const PopupMenuItem(
-                                value: 'block',
-                                child: Text('Chặn tài khoản'),
-                              ),
-                            ],
-                          ),
-                        ],
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    '@${profile.handle}',
+                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  if (profile.bio.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 14),
+                      child: Text(
+                        profile.bio,
+                        style: Theme.of(
+                          context,
+                        ).textTheme.bodyLarge?.copyWith(height: 1.5),
+                      ),
+                    ),
+                  const SizedBox(height: 16),
+                  Wrap(
+                    spacing: 16,
+                    runSpacing: 2,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Text(
+                        '${profile.postCount} bài viết',
+                        style: Theme.of(context).textTheme.labelLarge,
+                      ),
+                      TextButton(
+                        onPressed: () => _connections('followers'),
+                        child: Text('${profile.followerCount} người theo dõi'),
+                      ),
+                      TextButton(
+                        onPressed: () => _connections('following'),
+                        child: Text('${profile.followingCount} đang theo dõi'),
                       ),
                     ],
+                  ),
+                  if (!profile.isSelf) ...[
+                    const SizedBox(height: 16),
+                    Wrap(
+                      spacing: 9,
+                      runSpacing: 9,
+                      children: [
+                        FilledButton(
+                          onPressed: _working ? null : _follow,
+                          child: Text(
+                            profile.isFollowing ? 'Đang theo dõi' : 'Theo dõi',
+                          ),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _working ? null : _message,
+                          icon: const Icon(Icons.chat_bubble_outline_rounded),
+                          label: const Text('Nhắn tin'),
+                        ),
+                        PopupMenuButton<String>(
+                          tooltip: 'Tùy chọn tài khoản',
+                          onSelected: (value) {
+                            if (value == 'mute') _mute();
+                            if (value == 'block') _block();
+                          },
+                          itemBuilder: (_) => [
+                            PopupMenuItem(
+                              value: 'mute',
+                              child: Text(
+                                profile.isMuted
+                                    ? 'Bật lại nội dung'
+                                    : 'Tắt tiếng',
+                              ),
+                            ),
+                            const PopupMenuItem(
+                              value: 'block',
+                              child: Text('Chặn tài khoản'),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ],
-                ),
+                ],
               ),
             ),
+            const Divider(height: 1),
             if (_error != null) _ErrorCard(message: _error!, onRetry: _load),
             const SizedBox(height: 16),
             Text('Bài viết', style: Theme.of(context).textTheme.titleLarge),

@@ -1,3 +1,5 @@
+import 'home_search.dart';
+import 'password_field.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -252,6 +254,7 @@ class _IonicShellState extends State<IonicShell> {
   String? _profileHandle;
   String? _openConversationId;
   String? _openConversationName;
+  final _homeSearch = HomeSearchController();
   int _homeRefreshToken = 0;
   bool _checkingSession = true;
   String? _sessionError;
@@ -260,6 +263,12 @@ class _IonicShellState extends State<IonicShell> {
   void initState() {
     super.initState();
     _restoreSession();
+  }
+
+  @override
+  void dispose() {
+    _homeSearch.dispose();
+    super.dispose();
   }
 
   Future<void> _restoreSession() async {
@@ -280,7 +289,7 @@ class _IonicShellState extends State<IonicShell> {
     final user = await showIonicDialog<ApiUser>(
       context: context,
       barrierDismissible: false,
-      builder: (context) => _AuthDialog(api: _api, initialMode: mode),
+      builder: (context) => AuthDialog(api: _api, initialMode: mode),
     );
     if (user != null && mounted) {
       setState(() {
@@ -388,6 +397,7 @@ class _IonicShellState extends State<IonicShell> {
       api: _api,
       user: _user,
       refreshToken: _homeRefreshToken,
+      searchController: _homeSearch,
       onAuthenticate: _authenticate,
       onCompose: _compose,
       onOpenProfile: _openProfile,
@@ -486,6 +496,9 @@ class _IonicShellState extends State<IonicShell> {
                           api: _api,
                           user: _user,
                           busy: _checkingSession,
+                          searchController: _page == _Page.home
+                              ? _homeSearch
+                              : null,
                           onSignIn: () => _authenticate(mode: 'login'),
                           onOpenSettings: _openSettings,
                           onSignOut: _signOut,
@@ -547,8 +560,10 @@ class _TopBar extends StatelessWidget {
     required this.onSignIn,
     required this.onOpenSettings,
     required this.onSignOut,
+    this.searchController,
   });
 
+  final HomeSearchController? searchController;
   final ApiUser? user;
   final bool busy;
   final VoidCallback onSignIn;
@@ -571,6 +586,17 @@ class _TopBar extends StatelessWidget {
           Text('Ionic', style: Theme.of(context).textTheme.titleLarge),
         ],
         const Spacer(),
+        if (searchController != null)
+          ListenableBuilder(
+            listenable: searchController!,
+            builder: (context, _) => searchController!.compact
+                ? IconButton(
+                    tooltip: 'Tìm bài viết hoặc tài khoản',
+                    onPressed: searchController!.open,
+                    icon: const Icon(Icons.search_rounded),
+                  )
+                : const SizedBox.shrink(),
+          ),
         if (busy)
           const SizedBox(
             width: 20,
@@ -731,17 +757,17 @@ class _DesktopRail extends StatelessWidget {
   );
 }
 
-class _AuthDialog extends StatefulWidget {
-  const _AuthDialog({required this.api, required this.initialMode});
+class AuthDialog extends StatefulWidget {
+  const AuthDialog({required this.api, required this.initialMode, super.key});
 
   final IonicApi api;
   final String initialMode;
 
   @override
-  State<_AuthDialog> createState() => _AuthDialogState();
+  State<AuthDialog> createState() => _AuthDialogState();
 }
 
-class _AuthDialogState extends State<_AuthDialog> {
+class _AuthDialogState extends State<AuthDialog> {
   final _formKey = GlobalKey<FormState>();
   final _handle = TextEditingController();
   final _name = TextEditingController();
@@ -870,8 +896,8 @@ class _AuthDialogState extends State<_AuthDialog> {
                 ),
                 validator: (value) {
                   final handle = (value ?? '').trim().toLowerCase();
-                  if (!RegExp(r'^[a-z0-9_]{3,24}$').hasMatch(handle)) {
-                    return 'Dùng 3–24 ký tự: chữ, số hoặc dấu gạch dưới.';
+                  if (!RegExp(r'^[a-z0-9_-]{3,24}$').hasMatch(handle)) {
+                    return 'Dùng 3–24 ký tự: chữ không dấu, số, - hoặc _.';
                   }
                   if (_register && handle.contains('admin')) {
                     return 'Tên này được dành riêng.';
@@ -884,10 +910,9 @@ class _AuthDialogState extends State<_AuthDialog> {
                 },
               ),
               const SizedBox(height: 12),
-              TextFormField(
+              PasswordField(
                 controller: _password,
-                obscureText: true,
-                decoration: const InputDecoration(labelText: 'Mật khẩu'),
+                label: 'Mật khẩu',
                 validator: (value) =>
                     (value?.length ?? 0) >= (_register ? 12 : 1)
                     ? null

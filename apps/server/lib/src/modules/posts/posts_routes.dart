@@ -23,7 +23,8 @@ Handler createPostsRoutes(DatabaseService database) {
         r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
         caseSensitive: false,
       );
-      if (input.length != 1 ||
+      if (input.keys.any((k) => !['ids', 'threaded'].contains(k)) ||
+          (input.containsKey('threaded') && input['threaded'] is! bool) ||
           ids is! List ||
           ids.isEmpty ||
           ids.length > 50 ||
@@ -38,6 +39,7 @@ Handler createPostsRoutes(DatabaseService database) {
           50,
           null,
           ids: ids.cast<String>(),
+          threaded: input['threaded'] == true,
         ),
       );
     })
@@ -124,6 +126,41 @@ Handler createPostsRoutes(DatabaseService database) {
       '/<contentId>/replies',
       (Request request, String contentId) =>
           _replies(request, contentId, auth, posts),
+    )
+    ..post(
+      '/<contentId>/replies/<replyId>/like',
+      (Request request, String contentId, String replyId) async => _json(
+        201,
+        await posts.setReplyLike(
+          (await requireAuthenticatedUser(request, auth)).id,
+          contentId,
+          replyId,
+          true,
+        ),
+      ),
+    )
+    ..delete(
+      '/<contentId>/replies/<replyId>/like',
+      (Request request, String contentId, String replyId) async => _json(
+        200,
+        await posts.setReplyLike(
+          (await requireAuthenticatedUser(request, auth)).id,
+          contentId,
+          replyId,
+          false,
+        ),
+      ),
+    )
+    ..delete(
+      '/<contentId>/replies/<replyId>',
+      (Request request, String contentId, String replyId) async => _json(
+        200,
+        await posts.deleteReply(
+          (await requireAuthenticatedUser(request, auth)).id,
+          contentId,
+          replyId,
+        ),
+      ),
     )
     ..get('/<contentId>', (Request request, String contentId) async {
       final page = await posts.readVisible(
@@ -292,6 +329,10 @@ Future<Response> _replies(
   PostsService posts,
 ) async {
   final viewerId = await _optionalViewer(request, auth);
+  final threaded = request.url.queryParameters['threaded'];
+  if (threaded != null && threaded != 'true' && threaded != 'false') {
+    throw const ApiException(400, 'Threaded flag is invalid.');
+  }
   return _json(
     200,
     await posts.listReplies(
@@ -299,6 +340,8 @@ Future<Response> _replies(
       contentId,
       _limit(request),
       request.url.queryParameters['cursor'],
+      threaded: threaded == 'true',
+      thread: request.url.queryParameters['thread'],
     ),
   );
 }

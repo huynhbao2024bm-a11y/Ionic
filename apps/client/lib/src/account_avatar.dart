@@ -50,24 +50,43 @@ class _AccountAvatarState extends State<AccountAvatar> {
     builder: (context, result) => SizedBox(
       width: widget.size,
       height: widget.size,
-      child: ClipOval(
-        child: result.connectionState == ConnectionState.done && result.hasData
-            ? Image.memory(
-                result.data!,
-                fit: BoxFit.cover,
-                gaplessPlayback: false,
-                cacheWidth:
-                    (widget.size * MediaQuery.devicePixelRatioOf(context))
-                        .round(),
-                errorBuilder: (_, _, _) => _fallback(context),
-              )
-            : _fallback(context),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: Theme.of(context).brightness == Brightness.light
+                ? const Color(0xff8b929c)
+                : const Color(0xff666d78),
+            width: 1.2,
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(1.2),
+          child: ClipOval(
+            child:
+                result.connectionState == ConnectionState.done && result.hasData
+                ? Image.memory(
+                    result.data!,
+                    fit: BoxFit.cover,
+                    gaplessPlayback: false,
+                    cacheWidth:
+                        (widget.size * MediaQuery.devicePixelRatioOf(context))
+                            .round(),
+                    errorBuilder: (_, _, _) => _fallback(context),
+                  )
+                : _fallback(context),
+          ),
+        ),
       ),
     ),
   );
   Widget _fallback(BuildContext context) => CircleAvatar(
-    backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-    foregroundColor: Theme.of(context).colorScheme.onSurface,
+    backgroundColor: Theme.of(context).brightness == Brightness.light
+        ? const Color(0xffdce1e7)
+        : const Color(0xff343a43),
+    foregroundColor: Theme.of(context).brightness == Brightness.light
+        ? const Color(0xff252b34)
+        : const Color(0xfff3f5f7),
     child: Text(
       widget.name.trim().isEmpty
           ? 'I'

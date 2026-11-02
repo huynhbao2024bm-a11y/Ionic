@@ -104,6 +104,12 @@ String apiErrorText(Object error) {
 
 bool samePostSnapshot(FeedPost a, FeedPost b) =>
     a.body == b.body &&
+    a.removed == b.removed &&
+    a.canDelete == b.canDelete &&
+    a.threadCount == b.threadCount &&
+    a.inReplyToHandle == b.inReplyToHandle &&
+    a.parentReplyId == b.parentReplyId &&
+    a.threadRootId == b.threadRootId &&
     a.likeCount == b.likeCount &&
     a.replyCount == b.replyCount &&
     a.liked == b.liked &&
@@ -128,6 +134,12 @@ FeedPost mergePostSnapshot(FeedPost old, FeedPost current) => FeedPost(
   mimeType: current.mimeType,
   authorAvatarId: current.authorAvatarId,
   receiptId: old.receiptId,
+  parentReplyId: current.parentReplyId,
+  threadRootId: current.threadRootId,
+  inReplyToHandle: current.inReplyToHandle,
+  threadCount: current.threadCount,
+  canDelete: current.canDelete,
+  removed: current.removed,
 );
 
 class ApiUser {
@@ -171,6 +183,12 @@ class FeedPost {
     this.mimeType,
     this.receiptId,
     this.authorAvatarId,
+    this.parentReplyId,
+    this.threadRootId,
+    this.inReplyToHandle,
+    this.threadCount = 0,
+    this.canDelete = false,
+    this.removed = false,
   });
 
   final String id;
@@ -188,6 +206,44 @@ class FeedPost {
   final String? mimeType;
   final String? receiptId;
   final String? authorAvatarId;
+  final String? parentReplyId, threadRootId, inReplyToHandle;
+  final int threadCount;
+  final bool canDelete, removed;
+
+  FeedPost withReplyHeart(int count, bool value) => FeedPost(
+    id: id,
+    authorId: authorId,
+    handle: handle,
+    displayName: displayName,
+    body: body,
+    createdAt: createdAt,
+    likeCount: count,
+    replyCount: replyCount,
+    liked: value,
+    saved: saved,
+    attachments: attachments,
+    kind: kind,
+    mimeType: mimeType,
+    receiptId: receiptId,
+    authorAvatarId: authorAvatarId,
+    parentReplyId: parentReplyId,
+    threadRootId: threadRootId,
+    inReplyToHandle: inReplyToHandle,
+    threadCount: threadCount,
+    canDelete: canDelete,
+    removed: removed,
+  );
+
+  FeedPost get removedReply => FeedPost.fromJson({
+    'id': id,
+    'createdAt': createdAt,
+    'body': 'Bình luận đã được xóa.',
+    'parentReplyId': parentReplyId,
+    'threadRootId': threadRootId,
+    'threadCount': threadCount,
+    'removed': true,
+    'authorDisplayName': '',
+  });
 
   factory FeedPost.fromJson(Object? value) {
     final map = asJsonMap(value);
@@ -211,6 +267,12 @@ class FeedPost {
       mimeType: map['mimeType'] as String?,
       receiptId: map['receiptId'] as String?,
       authorAvatarId: map['authorAvatarId'] as String?,
+      parentReplyId: map['parentReplyId'] as String?,
+      threadRootId: map['threadRootId'] as String?,
+      inReplyToHandle: map['inReplyToHandle'] as String?,
+      threadCount: (map['threadCount'] as num?)?.toInt() ?? 0,
+      canDelete: map['canDelete'] == true,
+      removed: map['removed'] == true,
     );
   }
 }
@@ -581,14 +643,17 @@ class IonicApi {
   Future<FeedPost> post(String id) async => FeedPost.fromJson(
     await _request('GET', 'posts/${Uri.encodeComponent(id)}'),
   );
-  Future<List<FeedPost>> syncReplies(String id, List<String> ids) async =>
-      ids.isEmpty
+  Future<List<FeedPost>> syncReplies(
+    String id,
+    List<String> ids, {
+    bool threaded = false,
+  }) async => ids.isEmpty
       ? []
       : jsonItems(
           await _request(
             'POST',
             'posts/${Uri.encodeComponent(id)}/replies/sync',
-            body: {'ids': ids},
+            body: {'ids': ids, 'threaded': threaded},
           ),
         ).map(FeedPost.fromJson).toList();
   Future<List<FeedPost>> syncPosts(List<String> ids) async => ids.isEmpty
@@ -688,11 +753,21 @@ class IonicApi {
       body: saved ? const {} : null,
     ),
   );
-  Future<FeedPage> replies(String id, {String? cursor}) async {
+  Future<FeedPage> replies(
+    String id, {
+    String? cursor,
+    bool threaded = false,
+    String? thread,
+  }) async {
     final value = await _request(
       'GET',
       'posts/${Uri.encodeComponent(id)}/replies',
-      query: {'limit': '20', 'cursor': ?cursor},
+      query: {
+        'limit': '20',
+        'cursor': ?cursor,
+        'threaded': '$threaded',
+        'thread': ?thread,
+      },
     );
     return FeedPage(
       jsonItems(value).map(FeedPost.fromJson).toList(growable: false),
@@ -705,6 +780,7 @@ class IonicApi {
     String body, {
     List<String> attachmentIds = const [],
     String? clientPublishId,
+    String? parentReplyId,
   }) async => FeedPost.fromJson(
     await _request(
       'POST',
@@ -713,8 +789,25 @@ class IonicApi {
         'body': body,
         'attachmentIds': attachmentIds,
         'clientPublishId': ?clientPublishId,
+        'parentReplyId': ?parentReplyId,
       },
     ),
+  );
+
+  Future<JsonMap> setReplyLike(
+    String post,
+    String reply,
+    bool liked,
+  ) async => asJsonMap(
+    await _request(
+      liked ? 'POST' : 'DELETE',
+      'posts/${Uri.encodeComponent(post)}/replies/${Uri.encodeComponent(reply)}/like',
+      body: liked ? const {} : null,
+    ),
+  );
+  Future<void> deleteReply(String post, String reply) async => _request(
+    'DELETE',
+    'posts/${Uri.encodeComponent(post)}/replies/${Uri.encodeComponent(reply)}',
   );
 
   Future<ApiAttachment> uploadAttachment(
