@@ -262,7 +262,8 @@ void main() {
           }
           if (r.url.path.endsWith('/replies')) {
             if (r.method == 'POST') {
-              parent = asJsonMap(jsonDecode(r.body))['parentReplyId'] as String?;
+              parent =
+                  asJsonMap(jsonDecode(r.body))['parentReplyId'] as String?;
               return json({
                 ...post('new', 'Trả lời mới'),
                 'parentReplyId': parent,
@@ -338,7 +339,9 @@ void main() {
             sent++;
             return json(post('r', 'Đã gửi'), 201);
           }
-          if (r.url.path.endsWith('/replies')) return json({'items': <Object?>[]});
+          if (r.url.path.endsWith('/replies')) {
+            return json({'items': <Object?>[]});
+          }
           if (reads++ > 0) return json({'message': 'Unavailable'}, 503);
           return json(post('p', 'Bài viết'));
         }),
@@ -400,4 +403,66 @@ void main() {
     expect(lost, false);
     await t.pumpWidget(const SizedBox());
   });
+  testWidgets(
+    'Profile edit persists and refreshes the profile after dialog closes',
+    (t) async {
+      var bio = '', saved = 0;
+      final api = IonicApi(
+        client: MockClient((r) async {
+          if (r.method == 'PATCH') {
+            bio = asJsonMap(jsonDecode(r.body))['bio'] as String;
+            saved++;
+            return json({
+              'user': {
+                'id': user.id,
+                'handle': user.handle,
+                'displayName': user.displayName,
+              },
+            });
+          }
+          if (r.url.path.endsWith('/profiles/viewer-123')) {
+            return json({
+              'profile': {
+                'handle': user.handle,
+                'displayName': user.displayName,
+                'bio': bio,
+                'isSelf': true,
+              },
+            });
+          }
+          return json({'items': <Object?>[]});
+        }),
+      );
+      await t.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ProfileScreen(
+              api: api,
+              user: user,
+              handle: null,
+              onOpenConversation: (_, _) {},
+              onAuthenticate: ({required mode}) async {},
+              onToast: (_) {},
+            ),
+          ),
+        ),
+      );
+      await t.pumpAndSettle();
+      await t.tap(find.text('Sửa hồ sơ'));
+      await t.pumpAndSettle();
+      final field = find.byWidgetPredicate(
+        (w) => w is TextField && w.decoration?.labelText == 'Tiểu sử',
+      );
+      await t.enterText(field, 'Đã sửa tiểu sử');
+      await t.pump();
+      await t.tap(find.text('Lưu thay đổi'));
+      await t.pumpAndSettle();
+      expect(saved, 1);
+      expect(bio, 'Đã sửa tiểu sử');
+      expect(find.byType(ProfileEditor), findsNothing);
+      expect(find.text('Đã sửa tiểu sử'), findsOneWidget);
+      expect(t.takeException(), isNull);
+      await t.pumpWidget(const SizedBox());
+    },
+  );
 }

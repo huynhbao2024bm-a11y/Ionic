@@ -78,12 +78,17 @@ Future<void> main() async {
         body: bytes ?? (body == null ? null : jsonEncode(body)),
       ),
     );
-    final raw = await r.readAsString();
+    final raw = r.headers['content-type']?.contains('application/json') == true
+        ? await r.readAsString()
+        : await r.read().drain<void>().then((_) => '');
     check(
       r.statusCode == status,
       '$method $path expected $status got ${r.statusCode}: $raw',
     );
-    return raw.isEmpty ? {} : jsonDecode(raw) as Map<String, dynamic>;
+    return raw.isEmpty ||
+            !(r.headers['content-type']?.contains('application/json') ?? false)
+        ? {}
+        : jsonDecode(raw) as Map<String, dynamic>;
   }
 
   List<Map<String, dynamic>> items(Map<String, dynamic> page) =>
@@ -329,6 +334,7 @@ Future<void> main() async {
       'body': 'Ảnh đính kèm',
       'attachmentIds': [media],
     });
+    await call('GET', '/media/$media/file', actor: reader);
     await call('DELETE', '/posts/$p/replies/${mediaReply['id']}', actor: owner);
     check(
       (await db.query(
@@ -337,7 +343,7 @@ Future<void> main() async {
       )).isEmpty,
       'post owner deletion revokes media immediately',
     );
-    await call('GET', '/media/$media', actor: reader, status: 404);
+    await call('GET', '/media/$media/file', actor: reader, status: 404);
     await posts.deleteReply(owner.user.id, p, rid);
     final tombstone = items(
       await posts.listReplies(other.user.id, p, 20, null, threaded: true),

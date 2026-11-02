@@ -1,3 +1,4 @@
+import 'package:ionic_client/src/profile_editor.dart';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -30,6 +31,10 @@ void main() {
   testWidgets(
     'Real native private cohort edits profile, reads threads and sends messages',
     (t) async {
+      // Profile mode disables assertions and the binding does not register
+      // TestTextInput automatically. Explicitly attach synthetic input so its
+      // editing messages target the actual focused client; this is not an IME test.
+      binding.testTextInput.register();
       const base = 'https://ionic-api.onrender.com/api/v1';
       if (!const bool.fromEnvironment('ALLOW_LIVE_PREVIEW')) {
         throw StateError('Explicit opt-in required.');
@@ -56,6 +61,20 @@ void main() {
         await t.pumpAndSettle();
       }
 
+      Future<void> waitGone(Finder f) async {
+        final deadline = DateTime.now().add(const Duration(seconds: 50));
+        while (f.evaluate().isNotEmpty && DateTime.now().isBefore(deadline)) {
+          await t.pump(const Duration(milliseconds: 200));
+        }
+        expect(f, findsNothing);
+        await t.pumpAndSettle();
+      }
+
+      Finder rendered(String text) => find.byWidgetPredicate(
+        (w) =>
+            (w is Text && w.data == text) ||
+            (w is SelectableText && w.data == text),
+      );
       try {
         for (var i = 0; i < 2; i++) {
           final password = 'Fictional-123-$suffix-$i';
@@ -119,12 +138,29 @@ void main() {
         await t.tap(find.text('Sửa hồ sơ'));
         await t.pumpAndSettle();
         await t.enterText(
-          find.byType(TextField).last,
+          find.byWidgetPredicate(
+            (w) => w is TextField && w.decoration?.labelText == 'Tiểu sử',
+          ),
           'Tiểu sử đã sửa trực tiếp từ Android.',
         );
         await t.pump();
+        expect(
+          t
+              .widget<TextField>(
+                find.byWidgetPredicate(
+                  (w) => w is TextField && w.decoration?.labelText == 'Tiểu sử',
+                ),
+              )
+              .controller!
+              .text,
+          'Tiểu sử đã sửa trực tiếp từ Android.',
+        );
         await t.tap(find.text('Lưu thay đổi'));
-        await waitFor(find.text('Sửa hồ sơ'));
+        await waitGone(find.byType(ProfileEditor));
+        final snapshot = await a.api.profile(a.user.handle);
+        binding.reportData = {...?binding.reportData, 'savedBio': snapshot.bio};
+        expect(snapshot.bio, 'Tiểu sử đã sửa trực tiếp từ Android.');
+        await waitFor(rendered('Tiểu sử đã sửa trực tiếp từ Android.'));
         expect(
           (await a.api.profile(a.user.handle)).bio,
           'Tiểu sử đã sửa trực tiếp từ Android.',
@@ -160,7 +196,7 @@ void main() {
         );
         await waitFor(find.text('Bình luận riêng để kiểm tra trả lời.'));
         await t.tap(find.text('Thích').last);
-        await t.pumpAndSettle();
+        await waitFor(find.text('1'));
         expect(
           (await a.api.syncReplies(post.id, [
             root.id,
@@ -176,7 +212,7 @@ void main() {
         );
         await t.pump();
         await t.tap(find.byTooltip('Gửi bình luận'));
-        await waitFor(find.text('Trả lời mới từ giao diện Android.'));
+        await waitFor(rendered('Trả lời mới từ giao diện Android.'));
         expect(
           (await b.api.replies(
             post.id,
@@ -220,7 +256,7 @@ void main() {
         await t.enterText(find.byType(TextField).last, 'Gửi thật từ Android.');
         await t.pump();
         await t.tap(find.byTooltip('Gửi tin nhắn'));
-        await waitFor(find.text('Gửi thật từ Android.'));
+        await waitFor(rendered('Gửi thật từ Android.'));
         expect(
           (await b.api.messages(
             conversation.id,
@@ -239,12 +275,24 @@ void main() {
         expect(t.takeException(), isNull);
       } finally {
         await t.pumpWidget(const SizedBox());
+        binding.reportData = {
+          ...?binding.reportData,
+          'inputMode':
+              'synthetic TestTextInput; physical keyboard/IME not tested',
+          'fixtureAccountIds': actors.map((a) => a.user.id).toList(),
+          'cleanupViaAuthorizedApi': false,
+        };
         for (final actor in actors.reversed) {
           await actor.api.deleteAccount(actor.password);
         }
+        binding.reportData = {
+          ...?binding.reportData,
+          'cleanupViaAuthorizedApi': true,
+        };
         for (final client in clients) {
           client.close();
         }
+        binding.testTextInput.unregister();
       }
     },
     timeout: const Timeout(Duration(minutes: 8)),
