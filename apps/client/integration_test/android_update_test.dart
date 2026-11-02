@@ -19,6 +19,10 @@ void main() {
       );
       const expectedVersion = String.fromEnvironment('EXPECTED_UPDATE_VERSION');
       if (expectedVersion.isNotEmpty) expect(release!.version, expectedVersion);
+      const expectedTag = String.fromEnvironment('EXPECTED_UPDATE_TAG');
+      if (expectedTag.isNotEmpty) {
+        expect(release!.url.path, contains('/$expectedTag/'));
+      }
       var progress = 0.0;
       final path = await service.download(
         release!,

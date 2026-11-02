@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:ionic_client/src/ionic_api.dart';
@@ -8,6 +10,94 @@ import 'package:ionic_client/src/preview_heartbeat.dart';
 import 'package:ionic_client/src/client_preferences.dart';
 
 void main() {
+  setUpAll(() async {
+    FlutterSecureStorage.setMockInitialValues({});
+    await clientPreferences.load();
+  });
+  testWidgets(
+    'Changing text size does not rotate the active connectivity lease',
+    (t) async {
+      t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      clientPreferences.dataSaver = false;
+      var claims = 0;
+      final api = IonicApi(
+        baseUrl: 'http://local/api/v1',
+        client: MockClient((r) async {
+          if (r.url.path.endsWith('heartbeat-lease')) {
+            claims++;
+            return http.Response(
+              jsonEncode({'enabled': true, 'leaseToken': 'lease-$claims'}),
+              200,
+            );
+          }
+          return http.Response('{}', 200);
+        }),
+      );
+      await t.pumpWidget(
+        MaterialApp(
+          home: PreviewHeartbeat(api: api, userId: 'second'),
+        ),
+      );
+      await t.pumpAndSettle();
+      await t.runAsync(() async {
+        await clientPreferences.update(scale: 1.1);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      });
+      await t.pumpAndSettle();
+      final actual = claims;
+      await t.pumpWidget(const SizedBox());
+      await t.pumpAndSettle();
+      expect(actual, 1);
+    },
+  );
+  testWidgets(
+    'A late old-lease rejection cannot cancel the resumed connection timer',
+    (t) async {
+      t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      clientPreferences.dataSaver = false;
+      var time = DateTime(2026, 11, 2), claims = 0, pings = 0;
+      final old = Completer<http.Response>();
+      final api = IonicApi(
+        baseUrl: 'http://local/api/v1',
+        client: MockClient((r) async {
+          if (r.url.path.endsWith('heartbeat-lease')) {
+            claims++;
+            return http.Response(
+              jsonEncode({'enabled': true, 'leaseToken': 'lease-$claims'}),
+              200,
+            );
+          }
+          if (r.url.path.endsWith('heartbeat-release')) {
+            return http.Response('{}', 200);
+          }
+          pings++;
+          return pings == 1 ? old.future : http.Response('{}', 200);
+        }),
+      );
+      await t.pumpWidget(
+        MaterialApp(
+          home: PreviewHeartbeat(api: api, userId: 'second', now: () => time),
+        ),
+      );
+      await t.pumpAndSettle();
+      time = time.add(const Duration(minutes: 10));
+      await t.pump(const Duration(minutes: 10));
+      await t.pump();
+      t.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await t.pumpAndSettle();
+      t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await t.pumpAndSettle();
+      old.complete(http.Response('{}', 403));
+      await t.pumpAndSettle();
+      time = time.add(const Duration(minutes: 10));
+      await t.pump(const Duration(minutes: 10));
+      await t.pumpAndSettle();
+      final actual = pings;
+      await t.pumpWidget(const SizedBox());
+      await t.pumpAndSettle();
+      expect(actual, 2);
+    },
+  );
   testWidgets(
     'One leased foreground sender pings at ten minutes and releases in background',
     (t) async {

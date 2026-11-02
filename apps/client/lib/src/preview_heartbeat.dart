@@ -27,11 +27,14 @@ class _PreviewHeartbeatState extends State<PreviewHeartbeat>
   DateTime _now() => widget.now?.call() ?? DateTime.now();
   String? _token;
   Future<void>? _releaseWork;
+  bool _configuring = false, _configureAgain = false;
+  late bool _savedDataSaver;
   bool get _foreground =>
       WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
   @override
   void initState() {
     super.initState();
+    _savedDataSaver = clientPreferences.dataSaver;
     WidgetsBinding.instance.addObserver(this);
     clientPreferences.addListener(_preferences);
     _configure();
@@ -41,6 +44,8 @@ class _PreviewHeartbeatState extends State<PreviewHeartbeat>
   void didUpdateWidget(covariant PreviewHeartbeat oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.userId != widget.userId) {
+      _epoch++;
+      _stop();
       _last = null;
       _configure();
     }
@@ -66,6 +71,8 @@ class _PreviewHeartbeatState extends State<PreviewHeartbeat>
   }
 
   void _preferences() {
+    if (_savedDataSaver == clientPreferences.dataSaver) return;
+    _savedDataSaver = clientPreferences.dataSaver;
     if (clientPreferences.dataSaver) {
       _epoch++;
       _stop();
@@ -85,6 +92,23 @@ class _PreviewHeartbeatState extends State<PreviewHeartbeat>
   }
 
   Future<void> _configure() async {
+    if (_configuring) {
+      _configureAgain = true;
+      return;
+    }
+    _configuring = true;
+    try {
+      await _configureOnce();
+    } finally {
+      _configuring = false;
+      if (_configureAgain && mounted) {
+        _configureAgain = false;
+        unawaited(_configure());
+      }
+    }
+  }
+
+  Future<void> _configureOnce() async {
     final epoch = ++_epoch;
     _timer?.cancel();
     _allowed = false;
@@ -92,6 +116,17 @@ class _PreviewHeartbeatState extends State<PreviewHeartbeat>
       return;
     }
     try {
+      if (!clientPreferences.preferencesAvailable) {
+        await clientPreferences.load();
+      }
+      if (!mounted ||
+          epoch != _epoch ||
+          !clientPreferences.preferencesAvailable ||
+          clientPreferences.dataSaver ||
+          !_foreground ||
+          widget.userId == null) {
+        return;
+      }
       await _releaseWork;
       if (!mounted || epoch != _epoch || !_foreground) return;
       final result = await widget.api.claimHeartbeat(_token);
@@ -127,10 +162,11 @@ class _PreviewHeartbeatState extends State<PreviewHeartbeat>
     }
     _last = _now();
     _busy = true;
+    final epoch = _epoch;
     try {
       await widget.api.heartbeat(_token);
     } on IonicApiException catch (e) {
-      if (e.statusCode == 401 || e.statusCode == 403) {
+      if (epoch == _epoch && (e.statusCode == 401 || e.statusCode == 403)) {
         _allowed = false;
         _timer?.cancel();
       }
