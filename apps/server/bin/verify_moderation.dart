@@ -442,7 +442,18 @@ Future<void> main() async {
       items(await posts.readVisible(a, [secondId])).isEmpty,
       'owner deletion persisted',
     );
-    final heartbeat = PreviewHeartbeatService(db);
+    final heartbeat = PreviewHeartbeatService(db, deviceEnabled: true);
+    final retired = PreviewHeartbeatService(db);
+    check(!await retired.allowed(a), 'production device heartbeat is retired');
+    check(
+      (await retired.claim(a))['enabled'] == false,
+      'installed clients cannot start another timer',
+    );
+    await denied(
+      () => retired.ping(a),
+      403,
+      'old device timer stops on next ping',
+    );
     check(
       (await db.query(
             "SELECT owner_id FROM reserved_handle WHERE handle='admin'",

@@ -11,8 +11,9 @@ bool _valid(String? token) =>
     token != null && RegExp(r'^[A-Za-z0-9_-]{43}$').hasMatch(token);
 
 class PreviewHeartbeatService {
-  PreviewHeartbeatService(this.db);
+  PreviewHeartbeatService(this.db, {this.deviceEnabled = false});
   final DatabaseService db;
+  final bool deviceEnabled;
   Future<bool> _owner(String userId) async => (await db.query(
     r"""
     SELECT 1 FROM preview_heartbeat_account h JOIN app_user u ON u.id=h.user_id AND u.state='active'
@@ -21,17 +22,22 @@ class PreviewHeartbeatService {
     parameters: [userId],
   )).isNotEmpty;
   Future<bool> allowed(String userId) async =>
-      await _owner(userId) ||
-      (await db.query(
-        r"""
+      deviceEnabled &&
+      (await _owner(userId) ||
+          (await db.query(
+            r"""
     SELECT 1 FROM preview_heartbeat_account WHERE slot=2 AND user_id=$1 AND lease_expires_at>now()
     """,
-        parameters: [userId],
-      )).isNotEmpty;
+            parameters: [userId],
+          )).isNotEmpty);
   Future<Map<String, Object?>> claim(
     String userId, {
     String? previousToken,
   }) async {
+    if (!deviceEnabled) {
+      await release(userId, previousToken);
+      return {'enabled': false, 'intervalSeconds': 600};
+    }
     if (await _owner(userId)) return {'enabled': true, 'intervalSeconds': 600};
     final random = Random.secure(),
         token = base64Url
@@ -57,6 +63,13 @@ class PreviewHeartbeatService {
   }
 
   Future<void> ping(String userId, {String? leaseToken}) async {
+    if (!deviceEnabled) {
+      throw const ApiException(
+        403,
+        'Device heartbeat is disabled.',
+        code: 'DEVICE_HEARTBEAT_DISABLED',
+      );
+    }
     if (await _owner(userId)) return;
     if (_valid(leaseToken)) {
       final rows = await db.query(

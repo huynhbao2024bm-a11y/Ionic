@@ -43,7 +43,7 @@ The preview has single-process request budgets and bounded upload processing. Th
 
 Explicit private reviewer membership enables the reported-content queue and reasoned takedowns; a handle alone grants no role. Provision the verified owner privately after migrations. New user-authored publication fields reject recognizable links, including in messages. Current post/comment reads recheck authorization; foreground synchronization does not allocate new feed views.
 
-Technical connection heartbeats use one fixed verified-owner slot plus one atomic temporary app-instance lease. Only these two automatic senders can renew, at ten-minute foreground intervals; data saver/background/logout stops the client and expired leases are cleared. This produces no synthetic engagement and cannot guarantee uptime with closed apps or provider restarts. Normal users can still use the app. Auth forms warm safe readiness reads before writing and never automatically repeat an uncertain registration.
+The free preview uses one operator-only Supabase Cron/pg_net readiness GET every five minutes, independent of phones/apps. Apply the hosting migration in infra/supabase/migrations separately from application migrations. The private singleton holds only the last request outcome; completed logs for the exact Ionic jobs expire after seven days. Old device claims are disabled compatibly; no APK update is needed for server independence. No product activity is fabricated. Provider pause/restart/quota limits remain. Scoped rollback is infra/supabase/stop_preview_healthcheck.sql. Auth forms warm safe readiness reads and never automatically repeat an uncertain registration.
 
 ## Verification
 
