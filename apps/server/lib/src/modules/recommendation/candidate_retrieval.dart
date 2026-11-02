@@ -205,7 +205,7 @@ const candidateRetrievalSql = r'''WITH learned_positive_labels AS (
          SELECT id FROM selected_ids UNION SELECT id FROM random_candidates
        ), selected_candidates AS (
          SELECT c.id, c.author_id, c.body, c.kind, c.created_at,c.updated_at, NULL::text AS mime_type,
-           u.handle AS author_handle, p.display_name AS author_display_name,
+           u.handle AS author_handle, p.display_name AS author_display_name, p.avatar_media_id AS author_avatar_id,
            (SELECT count(*)::int FROM content_reaction r WHERE r.content_id = c.id) AS like_count,
            (SELECT count(*)::int FROM content_reply r WHERE r.content_id = c.id AND r.status = 'published') AS reply_count,
            EXISTS (SELECT 1 FROM content_reaction r WHERE r.content_id = c.id AND r.user_id = $2) AS liked,
@@ -216,7 +216,7 @@ const candidateRetrievalSql = r'''WITH learned_positive_labels AS (
          JOIN user_profile p ON p.user_id = u.id
        )
        SELECT e.id, e.author_id, e.body, e.kind, e.mime_type, e.created_at,e.updated_at, e.author_handle,
-         e.author_display_name, e.like_count, e.reply_count, e.liked, e.saved, e.has_attachments,
+         e.author_display_name, e.author_avatar_id, e.like_count, e.reply_count, e.liked, e.saved, e.has_attachments,
          l.taxonomy_version, l.dimension, l.label_id, l.confidence, l.source,
          sem.semantic_positive,sem.semantic_negative,random_source.random_position
        FROM selected_candidates e JOIN content_label l ON l.content_id = e.id

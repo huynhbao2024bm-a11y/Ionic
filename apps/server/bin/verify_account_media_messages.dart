@@ -71,7 +71,7 @@ Future<void> main() async {
     String suffix,
   ) async {
     final handle =
-        'verify_${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}_$suffix';
+        'verify_${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}${suffix}123';
     final r = await call(
       'POST',
       '/auth/register',

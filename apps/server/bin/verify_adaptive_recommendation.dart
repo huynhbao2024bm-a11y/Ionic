@@ -59,7 +59,7 @@ Future<void> main() async {
         await tx.execute(
           r'''INSERT INTO app_user(id,handle,handle_normalized,password_salt,password_hash)
           VALUES($1,$2,$2,decode(repeat('00',16),'hex'),decode(repeat('00',64),'hex'))''',
-          parameters: [users[i], 'v8_fixture_$i'],
+          parameters: [users[i], 'v8_fixture_${i.toString().padLeft(3, '0')}'],
         );
         await tx.execute(
           r'INSERT INTO user_profile(user_id,display_name) VALUES($1,$2)',
@@ -326,7 +326,8 @@ Future<void> main() async {
     );
     // Derived source provenance permits source deletion to withdraw evidence.
     final measured = await feed.forYou(viewer, 10, null),
-        m = items(measured).first;
+        // Do not randomly delete the independent audience fixture used below.
+        m = items(measured).firstWhere((item) => item['id'] != id(1158));
     await db.query(
       r"UPDATE recommendation_delivery_receipt SET issued_at=now()-interval '1 minute',expires_at=now()+interval '6 days' WHERE id=$1",
       parameters: [m['receiptId']],

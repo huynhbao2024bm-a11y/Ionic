@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import 'ionic_api.dart';
 import 'dialogs.dart';
+import 'account_avatar.dart';
+import 'app_updates.dart';
 import 'account_controls.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -112,6 +114,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (!mounted) return;
       setState(() {
         _profile = ApiProfile(
+          avatarMediaId: current.avatarMediaId,
           handle: current.handle,
           displayName: draft.displayName,
           bio: draft.bio,
@@ -293,6 +296,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   _sessionSection(context),
                 ],
               ],
+              const AppUpdateSettings(),
             ],
           ),
         ),
@@ -335,13 +339,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          CircleAvatar(
-            radius: 25,
-            backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-            foregroundColor: Theme.of(context).colorScheme.primary,
-            child: Text(
-              user.displayName.characters.first.toUpperCase(),
-              style: const TextStyle(fontWeight: FontWeight.w700),
+          SizedBox(
+            width: 140,
+            child: AvatarEditor(
+              api: widget.api,
+              name: user.displayName,
+              mediaId: profile?.avatarMediaId,
+              onSaved: (id) async {
+                final refreshed = await widget.api.currentUser();
+                if (!mounted) return;
+                widget.onProfileChanged(refreshed);
+                await _load();
+              },
             ),
           ),
           const SizedBox(width: 14),

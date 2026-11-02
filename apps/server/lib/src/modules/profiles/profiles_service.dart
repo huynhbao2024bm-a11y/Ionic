@@ -1,5 +1,9 @@
+import 'dart:convert';
+
 import 'package:ionic_server/src/http/api_exception.dart';
 import 'package:ionic_server/src/modules/database/database_service.dart';
+import 'package:ionic_server/src/modules/media/media_cleanup_service.dart';
+import 'package:ionic_server/src/modules/media/media_attachment_service.dart';
 import 'package:postgres/postgres.dart';
 import 'package:unorm_dart/unorm_dart.dart' as unorm;
 
@@ -10,7 +14,148 @@ class ProfilesService {
 
   final DatabaseService _database;
 
-  Future<Map<String, String>> updateMe(
+  Future<Map<String, Object?>> connections(
+    String viewerId,
+    String inputHandle,
+    String kind,
+    String? cursor,
+  ) async {
+    final handle = _parseHandle(inputHandle);
+    if (!['followers', 'following'].contains(kind)) {
+      throw const ApiException(400, 'Invalid connection list.');
+    }
+    await getProfile(viewerId, handle);
+    DateTime? before;
+    String? beforeId;
+    if (cursor != null) {
+      try {
+        if (cursor.length > 512) throw const FormatException();
+        final value = jsonDecode(
+          utf8.decode(base64Url.decode(base64Url.normalize(cursor))),
+        ) as Map;
+        before = DateTime.parse(value['at'] as String);
+        beforeId = value['id'] as String;
+        if (value['handle'] != handle ||
+            value['kind'] != kind ||
+            !RegExp(
+              r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+            ).hasMatch(beforeId)) {
+          throw const FormatException();
+        }
+      } catch (_) {
+        throw const ApiException(400, 'Invalid connection cursor.');
+      }
+    }
+    final targetColumn = kind == 'followers' ? 'followed_id' : 'follower_id';
+    final memberColumn = kind == 'followers' ? 'follower_id' : 'followed_id';
+    final rows = await _database.query(
+      '''WITH target AS (
+      SELECT u.id FROM app_user u JOIN user_profile p ON p.user_id=u.id
+      WHERE u.handle_normalized=\$2 AND u.state='active'
+        AND (u.id=\$1 OR p.visibility='public' OR EXISTS(SELECT 1 FROM account_follow f WHERE f.follower_id=\$1 AND f.followed_id=u.id))
+        AND NOT EXISTS(SELECT 1 FROM account_block b WHERE (b.blocker_id=\$1 AND b.blocked_id=u.id) OR (b.blocker_id=u.id AND b.blocked_id=\$1))
+    ) SELECT u.id,u.handle,p.display_name,p.avatar_media_id,p.visibility,f.created_at,
+      EXISTS(SELECT 1 FROM account_follow mine WHERE mine.follower_id=\$1 AND mine.followed_id=u.id) AS is_following,
+      EXISTS(SELECT 1 FROM account_mute m WHERE m.muter_id=\$1 AND m.muted_id=u.id) AS is_muted
+      FROM target t JOIN account_follow f ON f.$targetColumn=t.id
+      JOIN app_user u ON u.id=f.$memberColumn AND u.state='active'
+      JOIN user_profile p ON p.user_id=u.id
+      WHERE (t.id=\$1 OR p.visibility='public' OR u.id=\$1 OR EXISTS(SELECT 1 FROM account_follow mine WHERE mine.follower_id=\$1 AND mine.followed_id=u.id))
+        AND NOT EXISTS(SELECT 1 FROM account_block b WHERE (b.blocker_id=\$1 AND b.blocked_id=u.id) OR (b.blocker_id=u.id AND b.blocked_id=\$1))
+        AND (\$3::timestamptz IS NULL OR (f.created_at,u.id)<(\$3::timestamptz,\$4::uuid))
+      ORDER BY f.created_at DESC,u.id DESC LIMIT 31''',
+      parameters: [viewerId, handle, before, beforeId],
+    );
+    final page = rows.take(30).toList();
+    return {
+      'items': page.map((r) {
+        final v = r.toColumnMap();
+        return <String, Object?>{
+          'handle': v['handle'],
+          'displayName': v['display_name'],
+          'avatarMediaId': v['avatar_media_id'],
+          'isFollowing': v['is_following'] == true,
+          'isMuted': v['is_muted'] == true,
+          'isSelf': v['id'] == viewerId,
+          'canFollow': v['visibility'] == 'public' || v['is_following'] == true,
+        };
+      }).toList(),
+      'nextCursor': rows.length <= 30
+          ? null
+          : base64Url
+                .encode(
+                  utf8.encode(
+                    jsonEncode({
+                      'at': (page.last.toColumnMap()['created_at'] as DateTime)
+                          .toUtc()
+                          .toIso8601String(),
+                      'id': page.last.toColumnMap()['id'],
+                      'handle': handle,
+                      'kind': kind,
+                    }),
+                  ),
+                )
+                .replaceAll('=', ''),
+    };
+  }
+
+  Future<Map<String, String>> removeFollower(
+    String viewerId,
+    String handle,
+  ) async {
+    final target = await _target(handle);
+    final targetId = target['id'].toString();
+    if (targetId == viewerId) {
+      throw const ApiException(400, 'Cannot remove yourself.');
+    }
+    await _database.transaction((tx) async {
+      await _lockAccounts(tx, viewerId, targetId);
+      await tx.execute(
+        r'DELETE FROM account_follow WHERE followed_id=$1 AND follower_id=$2',
+        parameters: [viewerId, targetId],
+      );
+    });
+    return {'status': 'removed'};
+  }
+
+  Future<Map<String, Object?>> setAvatar(
+    String viewerId,
+    Object? mediaId,
+  ) async {
+    if (mediaId != null &&
+        (mediaId is! String ||
+            !RegExp(
+              r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+              caseSensitive: false,
+            ).hasMatch(mediaId))) {
+      throw const ApiException(400, 'Avatar ID is invalid.');
+    }
+    await _database.transaction((tx) async {
+      final profile = await tx.execute(
+        r'SELECT avatar_media_id FROM user_profile WHERE user_id=$1 FOR UPDATE',
+        parameters: [viewerId],
+      );
+      if (profile.isEmpty) {
+        throw const ApiException(404, 'Profile was not found.');
+      }
+      final old = profile.first.first;
+      if (old == mediaId) return;
+      if (mediaId != null) {
+        await claimAvatarImage(tx, viewerId, mediaId as String);
+      }
+      await tx.execute(
+        r'UPDATE user_profile SET avatar_media_id=$2, updated_at=now() WHERE user_id=$1',
+        parameters: [viewerId, mediaId],
+      );
+      if (old != null) {
+        await deleteReplacedAvatar(tx, viewerId, old.toString());
+      }
+    });
+    await MediaCleanupService(_database).drainBestEffort();
+    return {'avatarMediaId': mediaId};
+  }
+
+  Future<Map<String, Object?>> updateMe(
     String viewerId,
     Map<String, Object?> input,
   ) async {
@@ -38,12 +183,16 @@ class ProfilesService {
       r'''UPDATE user_profile
           SET display_name = $2, bio = $3, updated_at = now()
           WHERE user_id = $1
-          RETURNING display_name, bio''',
+          RETURNING display_name, bio, avatar_media_id''',
       parameters: [viewerId, displayName, bio],
     );
     if (result.isEmpty) throw const ApiException(404, 'Profile was not found.');
     final row = result.first.toColumnMap();
-    return {'displayName': '${row['display_name']}', 'bio': '${row['bio']}'};
+    return {
+      'displayName': '${row['display_name']}',
+      'bio': '${row['bio']}',
+      'avatarMediaId': row['avatar_media_id'],
+    };
   }
 
   Future<Map<String, Object?>> search(String viewerId, String? input) async {
@@ -92,7 +241,7 @@ class ProfilesService {
   ) async {
     final handle = _parseHandle(inputHandle);
     final result = await _database.query(
-      r'''SELECT u.id, u.handle, p.display_name, p.bio, p.visibility,
+      r'''SELECT u.id, u.handle, p.display_name, p.bio, p.visibility, p.avatar_media_id,
                 (SELECT count(*) FROM account_follow f WHERE f.followed_id = u.id) AS follower_count,
                 (SELECT count(*) FROM account_follow f WHERE f.follower_id = u.id) AS following_count,
                 (SELECT count(*) FROM content c WHERE c.author_id = u.id AND c.status = 'published' AND c.deleted_at IS NULL) AS post_count,
@@ -123,6 +272,7 @@ class ProfilesService {
     return {
       'profile': <String, Object?>{
         'handle': '${row['handle']}',
+        'avatarMediaId': row['avatar_media_id'],
         'displayName': '${row['display_name']}',
         'bio': '${row['bio']}',
         'visibility': visibility,

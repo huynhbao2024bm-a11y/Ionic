@@ -19,10 +19,14 @@ class ClientPreferences extends ChangeNotifier {
   double textScale = 1;
   bool reducedMotion = false;
   bool dataSaver = false;
+  bool preferencesAvailable = false;
+  Future<void>? _loadFuture;
   Future<void> _pending = Future.value();
-  Future<void> load() async {
+  Future<void> load() => _loadFuture ??= _load();
+  Future<void> _load() async {
     try {
       final raw = await _storage.read(key: 'ionic_display_preferences');
+      preferencesAvailable = true;
       if (raw == null) return;
       final data = jsonDecode(raw) as Map<String, dynamic>;
       textScale = ((data['textScale'] as num?)?.toDouble() ?? 1).clamp(.9, 1.5);
@@ -30,14 +34,16 @@ class ClientPreferences extends ChangeNotifier {
       dataSaver = data['dataSaver'] == true;
       notifyListeners();
     } catch (_) {
+      preferencesAvailable = false;
       /* Keep usable device defaults if storage is unavailable. */
     }
   }
 
   Future<void> update({double? scale, bool? motion, bool? saver}) async {
-    final operation = _pending.then(
-      (_) => _write(scale: scale, motion: motion, saver: saver),
-    );
+    final operation = _pending.then((_) async {
+      await load();
+      await _write(scale: scale, motion: motion, saver: saver);
+    });
     _pending = operation.catchError((Object _) {});
     await operation;
   }
@@ -56,6 +62,7 @@ class ClientPreferences extends ChangeNotifier {
     textScale = nextScale;
     reducedMotion = nextMotion;
     dataSaver = nextSaver;
+    preferencesAvailable = true;
     notifyListeners();
   }
 }

@@ -126,7 +126,7 @@ class PostsService {
   ) async {
     final cursor = _parsePostsCursor(cursorInput);
     final rows = await _database.query(
-      r'''SELECT c.id, c.author_id, c.body, c.created_at, u.handle AS author_handle, p.display_name AS author_display_name,
+      r'''SELECT c.id, c.author_id, c.body, c.created_at, u.handle AS author_handle, p.display_name AS author_display_name, p.avatar_media_id AS author_avatar_id,
       (SELECT count(*)::int FROM content_reaction r WHERE r.content_id = c.id) AS like_count,
       (SELECT count(*)::int FROM content_reply r WHERE r.content_id = c.id AND r.status = 'published') AS reply_count,
       EXISTS (SELECT 1 FROM content_reaction r WHERE r.content_id = c.id AND r.user_id = $1) AS liked, true AS saved
@@ -264,7 +264,7 @@ class PostsService {
     final cursor = _parsePostsCursor(cursorInput);
     final result = await _database.query(
       r'''SELECT c.id, c.author_id, c.body, c.created_at,
-                u.handle AS author_handle, p.display_name AS author_display_name,
+                u.handle AS author_handle, p.display_name AS author_display_name, p.avatar_media_id AS author_avatar_id,
                 (SELECT count(*)::int FROM content_reaction r WHERE r.content_id = c.id) AS like_count,
                 (SELECT count(*)::int FROM content_reply r WHERE r.content_id = c.id AND r.status = 'published') AS reply_count,
                 false AS liked, false AS saved
@@ -289,7 +289,7 @@ class PostsService {
     final cursor = _parsePostsCursor(cursorInput);
     final result = await _database.query(
       r'''SELECT c.id, c.author_id, c.body, c.created_at,
-                u.handle AS author_handle, p.display_name AS author_display_name,
+                u.handle AS author_handle, p.display_name AS author_display_name, p.avatar_media_id AS author_avatar_id,
                 (SELECT count(*)::int FROM content_reaction r WHERE r.content_id = c.id) AS like_count,
                 (SELECT count(*)::int FROM content_reply r WHERE r.content_id = c.id AND r.status = 'published') AS reply_count,
                 EXISTS (SELECT 1 FROM content_reaction r WHERE r.content_id = c.id AND r.user_id = $1) AS liked,
@@ -330,7 +330,7 @@ class PostsService {
     final result = await _database.query(
       r'''WITH search_term AS (SELECT websearch_to_tsquery('simple', $2) AS value)
          SELECT c.id, c.author_id, c.body, c.created_at,
-                u.handle AS author_handle, p.display_name AS author_display_name,
+                u.handle AS author_handle, p.display_name AS author_display_name, p.avatar_media_id AS author_avatar_id,
                 (SELECT count(*)::int FROM content_reaction r WHERE r.content_id = c.id) AS like_count,
                 (SELECT count(*)::int FROM content_reply r WHERE r.content_id = c.id AND r.status = 'published') AS reply_count,
                 EXISTS (SELECT 1 FROM content_reaction r WHERE r.content_id = c.id AND r.user_id = $1) AS liked,
@@ -616,7 +616,7 @@ class PostsService {
       await _assertCanInteract(transaction, viewerId, contentId);
       final result = await transaction.execute(
         r'''SELECT r.id, r.author_id, u.handle AS author_handle,
-                  p.display_name AS author_display_name, r.body, r.created_at
+                  p.display_name AS author_display_name, p.avatar_media_id AS author_avatar_id, r.body, r.created_at
            FROM content_reply r
            JOIN app_user u ON u.id = r.author_id AND u.state = 'active'
            JOIN user_profile p ON p.user_id = u.id
@@ -646,6 +646,7 @@ class PostsService {
           'authorId': '${value['author_id']}',
           'authorHandle': '${value['author_handle']}',
           'authorDisplayName': '${value['author_display_name']}',
+          'authorAvatarId': value['author_avatar_id'],
           'body': '${value['body']}',
           'attachments': attachmentViews['${value['id']}'] ?? const [],
           'createdAt': _dateTime(value['created_at']).toUtc().toIso8601String(),
@@ -726,6 +727,7 @@ Map<String, Object?> _postView(
   'createdAt': _dateTime(row['created_at']).toUtc().toIso8601String(),
   if (includeAuthor) 'authorHandle': '${row['author_handle']}',
   if (includeAuthor) 'authorDisplayName': '${row['author_display_name']}',
+  if (includeAuthor) 'authorAvatarId': row['author_avatar_id'],
   'likeCount': likeCount,
   'replyCount': replyCount,
   'liked': liked,

@@ -203,6 +203,7 @@ class RecommendationService {
         'createdAt': _asDateTime(post['created_at']).toUtc().toIso8601String(),
         'authorHandle': '${post['author_handle']}',
         'authorDisplayName': '${post['author_display_name']}',
+        'authorAvatarId': post['author_avatar_id'],
         'likeCount': (post['like_count'] as num).toInt(),
         'replyCount': (post['reply_count'] as num).toInt(),
         'liked': post['liked'] == true,

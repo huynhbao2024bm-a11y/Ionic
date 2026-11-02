@@ -69,11 +69,13 @@ class ApiUser {
     required this.id,
     required this.handle,
     required this.displayName,
+    this.avatarMediaId,
   });
 
   final String id;
   final String handle;
   final String displayName;
+  final String? avatarMediaId;
 
   factory ApiUser.fromJson(Object? value) {
     final map = asJsonMap(value);
@@ -81,6 +83,7 @@ class ApiUser {
       id: '${map['id'] ?? ''}',
       handle: '${map['handle'] ?? ''}',
       displayName: '${map['displayName'] ?? map['handle'] ?? ''}',
+      avatarMediaId: map['avatarMediaId'] as String?,
     );
   }
 }
@@ -101,6 +104,7 @@ class FeedPost {
     this.kind = 'text',
     this.mimeType,
     this.receiptId,
+    this.authorAvatarId,
   });
 
   final String id;
@@ -117,6 +121,7 @@ class FeedPost {
   final String kind;
   final String? mimeType;
   final String? receiptId;
+  final String? authorAvatarId;
 
   factory FeedPost.fromJson(Object? value) {
     final map = asJsonMap(value);
@@ -139,6 +144,7 @@ class FeedPost {
       kind: '${map['kind'] ?? 'text'}',
       mimeType: map['mimeType'] as String?,
       receiptId: map['receiptId'] as String?,
+      authorAvatarId: map['authorAvatarId'] as String?,
     );
   }
 }
@@ -180,6 +186,7 @@ class ApiProfile {
   const ApiProfile({
     required this.handle,
     required this.displayName,
+    this.avatarMediaId,
     required this.bio,
     required this.followerCount,
     required this.followingCount,
@@ -191,6 +198,7 @@ class ApiProfile {
 
   final String handle;
   final String displayName;
+  final String? avatarMediaId;
   final String bio;
   final int followerCount;
   final int followingCount;
@@ -204,6 +212,7 @@ class ApiProfile {
     return ApiProfile(
       handle: '${map['handle'] ?? ''}',
       displayName: '${map['displayName'] ?? 'Tài khoản'}',
+      avatarMediaId: map['avatarMediaId'] as String?,
       bio: '${map['bio'] ?? ''}',
       followerCount: (map['followerCount'] as num?)?.toInt() ?? 0,
       followingCount: (map['followingCount'] as num?)?.toInt() ?? 0,
@@ -223,6 +232,7 @@ class ApiConversation {
     required this.lastMessage,
     required this.updatedAt,
     this.unreadCount = 0,
+    this.partnerAvatarId,
   });
 
   final String id;
@@ -231,6 +241,7 @@ class ApiConversation {
   final String lastMessage;
   final String updatedAt;
   final int unreadCount;
+  final String? partnerAvatarId;
 
   factory ApiConversation.fromJson(Object? value) {
     final map = asJsonMap(value);
@@ -241,6 +252,7 @@ class ApiConversation {
       lastMessage: '${map['lastMessage'] ?? ''}',
       updatedAt: '${map['updatedAt'] ?? ''}',
       unreadCount: (map['unreadCount'] as num?)?.toInt() ?? 0,
+      partnerAvatarId: map['partnerAvatarId'] as String?,
     );
   }
 }
@@ -505,11 +517,11 @@ class IonicApi {
       body: saved ? const {} : null,
     ),
   );
-  Future<FeedPage> replies(String id) async {
+  Future<FeedPage> replies(String id, {String? cursor}) async {
     final value = await _request(
       'GET',
       'posts/${Uri.encodeComponent(id)}/replies',
-      query: const {'limit': '20'},
+      query: {'limit': '20', 'cursor': ?cursor},
     );
     return FeedPage(
       jsonItems(value).map(FeedPost.fromJson).toList(growable: false),
@@ -593,6 +605,25 @@ class IonicApi {
     );
     return ApiProfile.fromJson(asJsonMap(result)['profile']);
   }
+
+  Future<void> setAvatar(String? id) async =>
+      _request('PUT', 'profiles/me/avatar', body: {'mediaId': id});
+
+  Future<JsonMap> connections(
+    String handle,
+    String kind, {
+    String? cursor,
+  }) async => asJsonMap(
+    await _request(
+      'GET',
+      'profiles/${Uri.encodeComponent(_plainHandle(handle))}/$kind',
+      query: {'cursor': ?cursor},
+    ),
+  );
+  Future<void> removeFollower(String handle) async => _request(
+    'DELETE',
+    'profiles/me/followers/${Uri.encodeComponent(_plainHandle(handle))}',
+  );
 
   Future<ApiUser> updateProfile(String displayName, String bio) async =>
       _account(

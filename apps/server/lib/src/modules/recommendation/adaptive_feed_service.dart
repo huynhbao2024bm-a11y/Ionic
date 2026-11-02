@@ -331,6 +331,7 @@ extension AdaptiveFeedServing on RecommendationService {
         'createdAt': _asDateTime(p['created_at']).toUtc().toIso8601String(),
         'authorHandle': '${p['author_handle']}',
         'authorDisplayName': '${p['author_display_name']}',
+        'authorAvatarId': p['author_avatar_id'],
         'likeCount': p['like_count'],
         'replyCount': p['reply_count'],
         'liked': p['liked'] == true,
@@ -355,7 +356,7 @@ extension AdaptiveFeedServing on RecommendationService {
   ) async {
     if (receiptIds.isEmpty) return {};
     final rows = await tx.execute(
-      r'''SELECT c.*,u.handle AS author_handle,p.display_name AS author_display_name,
+      r'''SELECT c.*,u.handle AS author_handle,p.display_name AS author_display_name, p.avatar_media_id AS author_avatar_id,
       r.id AS receipt_id,r.measurement_enabled,
       (SELECT count(*)::int FROM content_reaction a WHERE a.content_id=c.id) AS like_count,
       (SELECT count(*)::int FROM content_reply a WHERE a.content_id=c.id AND a.status='published') AS reply_count,

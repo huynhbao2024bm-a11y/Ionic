@@ -131,3 +131,32 @@ Future<List<Map<String, Object?>>> attachmentsForReply(
   String replyId,
 ) async =>
     (await replyAttachmentViews(database, [replyId]))[replyId] ?? const [];
+
+/// Profiles coordinates the transaction; Media owns staged-image validation.
+Future<void> claimAvatarImage(TxSession tx, String ownerId, String id) async {
+  final rows = await tx.execute(
+    r'''SELECT id FROM media_asset a
+    WHERE id=$1 AND owner_id=$2 AND media_type='image' AND processing_state='staged'
+      AND NOT EXISTS(SELECT 1 FROM content_attachment c WHERE c.media_asset_id=a.id)
+    FOR UPDATE''',
+    parameters: [id, ownerId],
+  );
+  if (rows.isEmpty) {
+    throw const ApiException(400, 'Avatar image is no longer available.');
+  }
+  await tx.execute(
+    r"UPDATE media_asset SET processing_state='ready' WHERE id=$1",
+    parameters: [id],
+  );
+}
+
+Future<void> deleteReplacedAvatar(
+  TxSession tx,
+  String ownerId,
+  String id,
+) async {
+  await tx.execute(
+    r'DELETE FROM media_asset WHERE id=$1 AND owner_id=$2',
+    parameters: [id, ownerId],
+  );
+}

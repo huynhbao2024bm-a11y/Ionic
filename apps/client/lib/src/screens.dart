@@ -2,6 +2,7 @@
 // ignore_for_file: experimental_member_use
 
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 
 import 'package:camera/camera.dart';
 import 'package:file_picker/file_picker.dart';
@@ -13,8 +14,11 @@ import 'ionic_api.dart';
 import 'dialogs.dart';
 import 'media_composer.dart';
 import 'voice_player.dart';
+import 'account_avatar.dart';
 import 'client_preferences.dart';
 import 'feed_attention.dart';
+import 'search_history_store.dart';
+import 'connections_dialog.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
@@ -44,6 +48,9 @@ class _HomeScreenState extends State<HomeScreen> {
   final _feedViewport = GlobalKey();
   late final FeedAttentionController _attention;
   final _search = TextEditingController();
+  final _searchFocus = FocusNode();
+  List<String> _history = [];
+  bool _allHistory = false;
   Timer? _searchDelay;
   bool _busy = false;
   bool _searchBusy = false;
@@ -60,6 +67,8 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    _searchFocus.addListener(_searchFocusChanged);
+    _loadHistory();
     _attention = FeedAttentionController(
       viewportKey: _feedViewport,
       isActive: () =>
@@ -90,7 +99,10 @@ class _HomeScreenState extends State<HomeScreen> {
         _searchBusy = false;
         _actionBusy.clear();
         _search.clear();
+        _history = [];
+        _allHistory = false;
       });
+      _loadHistory();
       _load();
     } else if (oldWidget.refreshToken != widget.refreshToken) {
       _load();
@@ -101,9 +113,103 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _attention.dispose();
     _searchDelay?.cancel();
+    _searchFocus.removeListener(_searchFocusChanged);
+    _searchFocus.dispose();
     _search.dispose();
     super.dispose();
   }
+
+  void _openResultProfile(String handle) {
+    unawaited(_rememberSearch());
+    widget.onOpenProfile(handle);
+  }
+
+  void _searchFocusChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _loadHistory() async {
+    final id = widget.user?.id, epoch = _accountEpoch;
+    if (id == null) return;
+    try {
+      final items = await SearchHistoryStore.read(id);
+      if (mounted && epoch == _accountEpoch && widget.user?.id == id) {
+        setState(() => _history = items);
+      }
+    } catch (_) {
+      /* Search remains usable if protected storage is unavailable. */
+    }
+  }
+
+  Future<void> _rememberSearch() async {
+    final id = widget.user?.id, query = _search.text.trim();
+    if (id == null || query.length < 2 || query.length > 80) return;
+    try {
+      await SearchHistoryStore.add(id, query);
+      await _loadHistory();
+    } catch (_) {
+      if (mounted) {
+        widget.onToast('Chưa lưu được lịch sử tìm kiếm trên thiết bị.');
+      }
+    }
+  }
+
+  Future<void> _removeHistory(String? query) async {
+    final id = widget.user?.id;
+    if (id == null) return;
+    try {
+      if (query == null) {
+        await SearchHistoryStore.clear(id);
+      } else {
+        await SearchHistoryStore.remove(id, query);
+      }
+      await _loadHistory();
+    } catch (_) {
+      if (mounted) widget.onToast('Chưa xóa được lịch sử. Vui lòng thử lại.');
+    }
+  }
+
+  Widget _historySection() => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Row(
+        children: [
+          Expanded(
+            child: Text(
+              'Tìm kiếm gần đây',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ),
+          TextButton(
+            onPressed: () => _removeHistory(null),
+            child: const Text('Xóa tất cả'),
+          ),
+        ],
+      ),
+      for (final query in _history.take(_allHistory ? 20 : 5))
+        ListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.history_rounded),
+          title: Text(query, maxLines: 1, overflow: TextOverflow.ellipsis),
+          trailing: IconButton(
+            tooltip: 'Xóa tìm kiếm $query',
+            onPressed: () => _removeHistory(query),
+            icon: const Icon(Icons.close_rounded, size: 20),
+          ),
+          onTap: () {
+            _search.text = query;
+            _onSearch(query);
+            unawaited(_rememberSearch());
+          },
+        ),
+      if (_history.length > 5 && !_allHistory)
+        TextButton(
+          onPressed: () => setState(() => _allHistory = true),
+          child: const Text('Xem tất cả lịch sử'),
+        ),
+    ],
+  );
 
   Future<void> _load({bool append = false}) async {
     if (append && (_busy || _cursor == null)) return;
@@ -267,7 +373,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _postMenu(FeedPost post, String action) async {
     if (action == 'profile') {
-      widget.onOpenProfile(post.handle);
+      _openResultProfile(post.handle);
       return;
     }
     if (action == 'report') {
@@ -348,6 +454,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _openReplies(FeedPost post) async {
+    if (_search.text.trim().length >= 2) unawaited(_rememberSearch());
     if (widget.user == null) {
       await widget.onAuthenticate(mode: 'login');
       return;
@@ -355,7 +462,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await showIonicDialog<void>(
       context: context,
       builder: (context) =>
-          _RepliesDialog(api: widget.api, post: post, onToast: widget.onToast),
+          RepliesDialog(api: widget.api, post: post, onToast: widget.onToast),
     );
     await _load();
   }
@@ -378,8 +485,20 @@ class _HomeScreenState extends State<HomeScreen> {
                 children: [
                   TextField(
                     controller: _search,
+                    focusNode: _searchFocus,
+                    maxLength: 80,
+                    textInputAction: TextInputAction.search,
+                    onSubmitted: (value) {
+                      if (value.trim().length < 2 || widget.user == null) {
+                        return;
+                      }
+                      _searchDelay?.cancel();
+                      unawaited(_rememberSearch());
+                      _runSearch(value.trim());
+                    },
                     onChanged: _onSearch,
                     decoration: InputDecoration(
+                      counterText: '',
                       prefixIcon: const Icon(Icons.search_rounded),
                       hintText: 'Tìm bài viết hoặc tài khoản',
                       suffixIcon: _search.text.isEmpty
@@ -394,6 +513,11 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                     ),
                   ),
+                  if (_searchFocus.hasFocus &&
+                      _search.text.trim().length < 2 &&
+                      _history.isNotEmpty &&
+                      widget.user != null)
+                    _historySection(),
                   if (_search.text.trim().length >= 2)
                     _searchSection()
                   else ...[
@@ -419,8 +543,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               _actionBusy.contains('like:${post.id}') ||
                               _actionBusy.contains('save:${post.id}'),
                           api: widget.api,
-                          onOpenProfile: () =>
-                              widget.onOpenProfile(post.handle),
+                          onOpenProfile: () => _openResultProfile(post.handle),
                           onLike: () => _toggleLike(post),
                           onSave: () => _toggleSave(post),
                           onReply: () => _openReplies(post),
@@ -483,7 +606,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 title: Text('${profile['displayName'] ?? ''}'),
                 subtitle: Text('@${profile['handle'] ?? ''}'),
                 trailing: const Icon(Icons.chevron_right_rounded),
-                onTap: () => widget.onOpenProfile('${profile['handle'] ?? ''}'),
+                onTap: () {
+                  _openResultProfile('${profile['handle'] ?? ''}');
+                },
               ),
             ),
         ],
@@ -497,7 +622,7 @@ class _HomeScreenState extends State<HomeScreen> {
             post: post,
             busy: false,
             api: widget.api,
-            onOpenProfile: () => widget.onOpenProfile(post.handle),
+            onOpenProfile: () => _openResultProfile(post.handle),
             onLike: () => _toggleLike(post),
             onSave: () => _toggleSave(post),
             onReply: () => _openReplies(post),
@@ -577,7 +702,11 @@ class PostCard extends StatelessWidget {
               InkWell(
                 onTap: onOpenProfile,
                 borderRadius: BorderRadius.circular(30),
-                child: _Avatar(name: post.displayName),
+                child: AccountAvatar(
+                  api: api,
+                  name: post.displayName,
+                  mediaId: post.authorAvatarId,
+                ),
               ),
               const SizedBox(width: 11),
               Expanded(
@@ -1412,6 +1541,7 @@ Widget _emptyCard(
 FeedPost _copy(FeedPost post, {bool? liked, bool? saved, int? likeCount}) =>
     FeedPost(
       id: post.id,
+      authorAvatarId: post.authorAvatarId,
       authorId: post.authorId,
       handle: post.handle,
       displayName: post.displayName,
@@ -1437,32 +1567,28 @@ String _timeAgo(String timestamp) {
   return '${elapsed.inDays} ngày';
 }
 
-class _RepliesDialog extends StatefulWidget {
-  const _RepliesDialog({
+class RepliesDialog extends StatefulWidget {
+  const RepliesDialog({
     required this.api,
     required this.post,
     required this.onToast,
+    super.key,
   });
   final IonicApi api;
   final FeedPost post;
   final ValueChanged<String> onToast;
-
   @override
-  State<_RepliesDialog> createState() => _RepliesDialogState();
+  State<RepliesDialog> createState() => _RepliesDialogState();
 }
 
-class _RepliesDialogState extends State<_RepliesDialog> {
+class _RepliesDialogState extends State<RepliesDialog> {
   final _text = TextEditingController();
   late MediaPublication _publication = MediaPublication(widget.api);
-  String? _progress;
   List<FeedPost> _items = [];
   IonicMediaDraft _media = const IonicMediaDraft();
-  Key _mediaComposerKey = UniqueKey();
-  bool _mediaBusy = false;
-  bool _loading = true;
-  bool _sending = false;
-  String? _error;
-
+  Key _mediaKey = UniqueKey();
+  bool _mediaBusy = false, _loading = true, _sending = false;
+  String? _error, _sendError, _cursor, _progress;
   @override
   void initState() {
     super.initState();
@@ -1476,16 +1602,30 @@ class _RepliesDialogState extends State<_RepliesDialog> {
     super.dispose();
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool append = false}) async {
+    if (append && (_loading || _cursor == null)) return;
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
-      final page = await widget.api.replies(widget.post.id);
-      if (mounted) setState(() => _items = page.items);
-    } catch (error) {
-      if (mounted) setState(() => _error = apiErrorText(error));
+      final page = await widget.api.replies(
+        widget.post.id,
+        cursor: append ? _cursor : null,
+      );
+      if (!mounted) return;
+      setState(() {
+        _items = {
+          for (final item in [
+            ...(append ? _items : <FeedPost>[]),
+            ...page.items,
+          ])
+            item.id: item,
+        }.values.toList();
+        _cursor = page.nextCursor;
+      });
+    } catch (e) {
+      if (mounted) setState(() => _error = apiErrorText(e));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -1496,133 +1636,224 @@ class _RepliesDialogState extends State<_RepliesDialog> {
     if (body.isEmpty || body.length > 500 || _sending || _mediaBusy) return;
     setState(() {
       _sending = true;
-      _error = null;
+      _sendError = null;
     });
     try {
-      final staged = await _publication.prepare(body, _media, (value) {
-        if (mounted) setState(() => _progress = value);
+      final ids = await _publication.prepare(body, _media, (v) {
+        if (mounted) setState(() => _progress = v);
       });
-      await widget.api.createReply(
+      final reply = await widget.api.createReply(
         widget.post.id,
         body,
-        attachmentIds: staged,
+        attachmentIds: ids,
         clientPublishId: _publication.id,
       );
-      if (mounted) {
-        unawaited(_publication.dispose());
-        _publication = MediaPublication(widget.api);
-        setState(() {
-          _text.clear();
-          _media = const IonicMediaDraft();
-          _mediaComposerKey = UniqueKey();
-        });
-      }
-      await _load();
-    } catch (error) {
-      if (mounted) setState(() => _error = apiErrorText(error));
+      if (!mounted) return;
+      unawaited(_publication.dispose());
+      _publication = MediaPublication(widget.api);
+      setState(() {
+        _items = [reply, ..._items.where((r) => r.id != reply.id)];
+        _text.clear();
+        _media = const IonicMediaDraft();
+        _mediaKey = UniqueKey();
+      });
+    } catch (e) {
+      if (mounted) setState(() => _sendError = apiErrorText(e));
     } finally {
       if (mounted) setState(() => _sending = false);
     }
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Trả lời bài viết'),
-    content: SizedBox(
-      width: 520,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Flexible(
-            child: _loading
-                ? const Center(child: CircularProgressIndicator())
-                : _error != null
-                ? _ErrorCard(message: _error!, onRetry: _load)
-                : _items.isEmpty
-                ? const _InlineEmpty(
-                    text: 'Chưa có trả lời. Hãy mở đầu cuộc trò chuyện.',
-                  )
-                : ListView.builder(
-                    shrinkWrap: true,
-                    itemCount: _items.length,
-                    itemBuilder: (context, index) {
-                      final reply = _items[index];
-                      return ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        leading: _Avatar(name: reply.displayName, size: 38),
-                        title: Text(
-                          '@${reply.handle} · ${_timeAgo(reply.createdAt)}',
-                        ),
-                        subtitle: Padding(
-                          padding: const EdgeInsets.only(top: 5),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(reply.body),
-                              if (reply.attachments.isNotEmpty)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 8),
-                                  child: _PostAttachments(
-                                    api: widget.api,
-                                    attachments: reply.attachments,
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
+  Widget build(BuildContext context) => Dialog(
+    insetPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+    clipBehavior: Clip.antiAlias,
+    child: SizedBox(
+      width: 600,
+      height: MediaQuery.sizeOf(context).height * .88,
+      child: LayoutBuilder(
+        builder: (context, constraints) => Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 6, 6, 6),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Bình luận',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
                   ),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _text,
-            readOnly: _sending,
-            maxLength: 500,
-            minLines: 2,
-            maxLines: 4,
-            onChanged: (_) => setState(() {}),
-            decoration: const InputDecoration(
-              hintText: 'Viết trả lời',
-              counterText: '',
-            ),
-          ),
-          if (_sending && _progress != null) Text(_progress!),
-          MediaComposerControls(
-            enabled: !_sending,
-            key: _mediaComposerKey,
-            onChanged: (value) => setState(() => _media = value),
-            onBusyChanged: (value) => setState(() => _mediaBusy = value),
-          ),
-          if (_error != null)
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                _error!,
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  IconButton(
+                    tooltip: 'Đóng bình luận',
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
               ),
             ),
-        ],
+            const Divider(height: 1),
+            Expanded(
+              child: _loading && _items.isEmpty
+                  ? const Center(child: CircularProgressIndicator())
+                  : _error != null && _items.isEmpty
+                  ? _ErrorCard(message: _error!, onRetry: _load)
+                  : RefreshIndicator(
+                      onRefresh: _load,
+                      child: ListView.builder(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 12,
+                        ),
+                        itemCount: _items.length + 1,
+                        itemBuilder: (context, index) {
+                          if (index == _items.length) {
+                            if (_error != null) {
+                              return _ErrorCard(
+                                message: _error!,
+                                onRetry: () => _load(append: true),
+                              );
+                            }
+                            if (_cursor != null) {
+                              return TextButton(
+                                onPressed: _loading
+                                    ? null
+                                    : () => _load(append: true),
+                                child: Text(
+                                  _loading ? 'Đang tải…' : 'Xem thêm bình luận',
+                                ),
+                              );
+                            }
+                            return _items.isEmpty
+                                ? const _InlineEmpty(
+                                    text:
+                                        'Chưa có bình luận. Hãy bắt đầu trò chuyện.',
+                                  )
+                                : const SizedBox(height: 12);
+                          }
+                          final reply = _items[index];
+                          return Padding(
+                            key: ValueKey(reply.id),
+                            padding: const EdgeInsets.only(bottom: 20),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                AccountAvatar(
+                                  api: widget.api,
+                                  name: reply.displayName,
+                                  mediaId: reply.authorAvatarId,
+                                  size: 36,
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        reply.displayName,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                      Text(
+                                        '@${reply.handle} · ${_timeAgo(reply.createdAt)}',
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.bodySmall,
+                                      ),
+                                      const SizedBox(height: 5),
+                                      Text(reply.body),
+                                      if (reply.attachments.isNotEmpty)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            top: 8,
+                                          ),
+                                          child: _PostAttachments(
+                                            api: widget.api,
+                                            attachments: reply.attachments,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+            ),
+            const Divider(height: 1),
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: constraints.maxHeight * .52,
+              ),
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _text,
+                            readOnly: _sending,
+                            maxLength: 500,
+                            minLines: 1,
+                            maxLines: 3,
+                            onChanged: (_) => setState(() {}),
+                            decoration: const InputDecoration(
+                              hintText: 'Viết bình luận…',
+                              counterText: '',
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Gửi bình luận',
+                          onPressed:
+                              _sending ||
+                                  _mediaBusy ||
+                                  _text.text.trim().isEmpty
+                              ? null
+                              : _send,
+                          icon: _sending
+                              ? const SizedBox(
+                                  width: 22,
+                                  height: 22,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.send_rounded),
+                        ),
+                      ],
+                    ),
+                    MediaComposerControls(
+                      key: _mediaKey,
+                      enabled: !_sending,
+                      onChanged: (v) => setState(() => _media = v),
+                      onBusyChanged: (v) => setState(() => _mediaBusy = v),
+                    ),
+                    if (_sending && _progress != null) Text(_progress!),
+                    if (_sendError != null)
+                      Text(
+                        _sendError!,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('Đóng'),
-      ),
-      FilledButton(
-        onPressed: _sending || _mediaBusy || _text.text.trim().isEmpty
-            ? null
-            : _send,
-        child: _sending
-            ? const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Text('Gửi'),
-      ),
-    ],
   );
 }
 
@@ -2375,7 +2606,11 @@ class _MessagesScreenState extends State<MessagesScreen>
   List<ApiMessage> _messages = [];
   Timer? _poll;
   bool _loadingInbox = false;
+  bool _inboxLoaded = false;
+  String _inboxQuery = '';
+  String? _inboxError, _lastReadSent;
   bool _loadingMessages = false;
+  bool _messagesLoaded = false;
   bool _sending = false;
   bool _starting = false;
   int _sessionEpoch = 0;
@@ -2409,10 +2644,14 @@ class _MessagesScreenState extends State<MessagesScreen>
       setState(() {
         _messages = [];
         _conversations = [];
+        _inboxLoaded = false;
+        _inboxError = null;
+        _inboxQuery = '';
         _error = null;
         _message.clear();
         _loadingInbox = false;
         _loadingMessages = false;
+        _messagesLoaded = false;
         _starting = false;
       });
       _loadConversations();
@@ -2424,6 +2663,7 @@ class _MessagesScreenState extends State<MessagesScreen>
       _retryId = null;
       _retryBody = null;
       _olderCursor = null;
+      _lastReadSent = null;
       _partnerReadAt = null;
       _partnerReadId = null;
       _sending = false;
@@ -2431,6 +2671,7 @@ class _MessagesScreenState extends State<MessagesScreen>
       setState(() {
         _messages = [];
         _loadingMessages = false;
+        _messagesLoaded = false;
         _error = null;
       });
       if (_chatOpen && widget.user != null) _loadMessages();
@@ -2467,7 +2708,7 @@ class _MessagesScreenState extends State<MessagesScreen>
       if (_chatOpen) {
         _loadMessages(silent: true);
       } else if (!_loadingInbox) {
-        _loadConversations();
+        _loadConversations(silent: true);
       }
     });
   }
@@ -2512,26 +2753,68 @@ class _MessagesScreenState extends State<MessagesScreen>
     }
   }
 
-  Future<void> _loadConversations() async {
-    if (widget.user == null) return;
+  Future<void> _loadConversations({bool silent = false}) async {
+    if (widget.user == null || _loadingInbox) return;
     final epoch = _sessionEpoch;
     final userId = widget.user!.id;
-    setState(() {
-      _loadingInbox = true;
-      _error = null;
-    });
+    _loadingInbox = true;
+    if (!silent && !_inboxLoaded) setState(() => _inboxError = null);
     try {
       final result = await widget.api.conversations();
-      if (mounted && epoch == _sessionEpoch && widget.user?.id == userId) {
-        setState(() => _conversations = result);
+      if (!mounted || epoch != _sessionEpoch || widget.user?.id != userId) {
+        return;
       }
-    } catch (error) {
+      final same = listEquals(
+        result
+            .map(
+              (c) => [
+                c.id,
+                c.lastMessage,
+                c.updatedAt,
+                c.unreadCount,
+                c.partnerDisplayName,
+                c.partnerAvatarId,
+              ].join('\u0000'),
+            )
+            .toList(),
+        _conversations
+            .map(
+              (c) => [
+                c.id,
+                c.lastMessage,
+                c.updatedAt,
+                c.unreadCount,
+                c.partnerDisplayName,
+                c.partnerAvatarId,
+              ].join('\u0000'),
+            )
+            .toList(),
+      );
+      if (!same || !_inboxLoaded || _inboxError != null) {
+        setState(() {
+          _conversations = result;
+          _inboxLoaded = true;
+          _inboxError = null;
+        });
+      }
+    } catch (e) {
       if (mounted && epoch == _sessionEpoch && widget.user?.id == userId) {
-        setState(() => _error = apiErrorText(error));
+        if (e is IonicApiException && [401, 403].contains(e.statusCode)) {
+          setState(() {
+            _conversations = [];
+            _inboxError = apiErrorText(e);
+          });
+        } else {
+          final error = _inboxLoaded
+              ? 'Chưa cập nhật được tin nhắn. Đang thử kết nối lại…'
+              : apiErrorText(e);
+          if (_inboxError != error) setState(() => _inboxError = error);
+        }
       }
     } finally {
       if (mounted && epoch == _sessionEpoch && widget.user?.id == userId) {
-        setState(() => _loadingInbox = false);
+        _loadingInbox = false;
+        if (!_inboxLoaded) setState(() {});
       }
     }
   }
@@ -2544,8 +2827,8 @@ class _MessagesScreenState extends State<MessagesScreen>
     final epoch = _sessionEpoch;
     final userId = widget.user!.id;
     final request = ++_messageRequest;
-    final nearBottom = !_scroll.hasClients || _scroll.position.extentAfter < 80;
-    final initial = _messages.isEmpty;
+    final nearBottom = !_scroll.hasClients || _scroll.position.pixels < 80;
+    final initial = !_messagesLoaded;
     _loadingMessages = true;
     if (!silent) {
       setState(() {
@@ -2561,24 +2844,48 @@ class _MessagesScreenState extends State<MessagesScreen>
           widget.conversationId != id) {
         return;
       }
-      setState(() {
-        _messages = _mergeMessages(result.items);
-        if (initial) _olderCursor = result.nextCursor;
-        _partnerReadAt = result.partnerReadAt;
-        _partnerReadId = result.partnerReadMessageId;
-        if (silent) _error = null;
-      });
-      if (_foreground && result.items.isNotEmpty) {
+      final changed = result.items.any(
+        (m) => !_messages.any((old) => old.id == m.id),
+      );
+      if (changed ||
+          initial ||
+          _error != null ||
+          _partnerReadAt != result.partnerReadAt ||
+          _partnerReadId != result.partnerReadMessageId) {
+        setState(() {
+          _messagesLoaded = true;
+          _messages = _mergeMessages(result.items);
+          if (initial) _olderCursor = result.nextCursor;
+          _partnerReadAt = result.partnerReadAt;
+          _partnerReadId = result.partnerReadMessageId;
+          if (silent) _error = null;
+        });
+      }
+      if (_foreground &&
+          result.items.isNotEmpty &&
+          _lastReadSent != result.items.last.id) {
+        final readId = result.items.last.id;
         unawaited(
           widget.api
-              .markConversationRead(id, result.items.last.id)
+              .markConversationRead(id, readId)
+              .then((_) {
+                if (mounted &&
+                    epoch == _sessionEpoch &&
+                    widget.conversationId == id) {
+                  _lastReadSent = readId;
+                }
+              })
               .catchError((Object _) {}),
         );
       }
-      if (nearBottom) {
+      if (nearBottom && (initial || changed)) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (_scroll.hasClients) {
-            _scroll.jumpTo(_scroll.position.maxScrollExtent);
+            _scroll.animateTo(
+              0,
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeOut,
+            );
           }
         });
       }
@@ -2669,7 +2976,11 @@ class _MessagesScreenState extends State<MessagesScreen>
       if (_scroll.hasClients) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (_scroll.hasClients) {
-            _scroll.jumpTo(_scroll.position.maxScrollExtent);
+            _scroll.animateTo(
+              0,
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeOut,
+            );
           }
         });
       }
@@ -2698,251 +3009,444 @@ class _MessagesScreenState extends State<MessagesScreen>
   Widget build(BuildContext context) {
     if (widget.user == null) {
       return Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 540),
-          child: Padding(
-            padding: const EdgeInsets.all(22),
-            child: _SignInCard(
-              onSignIn: () => widget.onAuthenticate(mode: 'login'),
-              title: 'Tin nhắn riêng tư',
-              detail: 'Đăng nhập để bắt đầu và tiếp tục các cuộc trò chuyện.',
-            ),
-          ),
+        child: _SignInCard(
+          onSignIn: () => widget.onAuthenticate(mode: 'login'),
+          title: 'Tin nhắn riêng tư',
+          detail: 'Đăng nhập để trò chuyện.',
         ),
       );
     }
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 1080),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(22, 10, 22, 24),
-          child: Card(child: _chatOpen ? _chatView() : _inboxView()),
-        ),
-      ),
+    final content = LayoutBuilder(
+      builder: (context, constraints) {
+        final wide = constraints.maxWidth >= 820;
+        final inbox = _inboxView();
+        if (wide) {
+          return Row(
+            children: [
+              SizedBox(width: 320, child: inbox),
+              const VerticalDivider(width: 1),
+              Expanded(
+                child: _chatOpen
+                    ? _chatView()
+                    : const Center(
+                        child: Text('Chọn cuộc trò chuyện để bắt đầu.'),
+                      ),
+              ),
+            ],
+          );
+        }
+        return _chatOpen ? _chatView() : inbox;
+      },
+    );
+    return PopScope(
+      canPop: !_chatOpen,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _chatOpen) {
+          widget.onConversation('', '');
+          _loadConversations(silent: true);
+        }
+      },
+      child: content,
     );
   }
 
-  Widget _inboxView() => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(18, 16, 10, 12),
-        child: Row(
-          children: [
-            Expanded(
-              child: Text(
-                'Tin nhắn',
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
-            ),
-            IconButton(
-              tooltip: 'Làm mới',
-              onPressed: _loadConversations,
-              icon: const Icon(Icons.refresh_rounded),
-            ),
-            FilledButton.icon(
-              onPressed: _starting ? null : _newConversation,
-              icon: const Icon(Icons.edit_outlined),
-              label: const Text('Tin nhắn mới'),
-            ),
-          ],
-        ),
-      ),
-      const Divider(height: 1),
-      if (_loadingInbox && _conversations.isEmpty)
-        const Expanded(child: Center(child: CircularProgressIndicator()))
-      else if (_error != null)
-        Expanded(
-          child: _ErrorCard(message: _error!, onRetry: _loadConversations),
+  Widget _inboxView() {
+    final query = _inboxQuery.trim().toLowerCase();
+    final items = _conversations
+        .where(
+          (c) =>
+              query.isEmpty ||
+              c.partnerDisplayName.toLowerCase().contains(query) ||
+              c.partnerHandle.toLowerCase().contains(query),
         )
-      else if (_conversations.isEmpty)
-        Expanded(
-          child: _emptyCard(
-            context,
-            'Chưa có cuộc trò chuyện',
-            'Bắt đầu trò chuyện với một tài khoản Ionic.',
-            _newConversation,
-            actionLabel: 'Tin nhắn mới',
-          ),
-        )
-      else
-        Expanded(
-          child: ListView.separated(
-            itemCount: _conversations.length,
-            separatorBuilder: (_, _) => const Divider(height: 1, indent: 76),
-            itemBuilder: (context, index) {
-              final conversation = _conversations[index];
-              return ListTile(
-                leading: _Avatar(
-                  name: conversation.partnerDisplayName,
-                  size: 48,
-                ),
-                title: Text(
-                  conversation.partnerDisplayName,
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-                subtitle: Text(
-                  conversation.lastMessage.isEmpty
-                      ? '@${conversation.partnerHandle}'
-                      : conversation.lastMessage,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                trailing: conversation.unreadCount > 0
-                    ? Badge(label: Text('${conversation.unreadCount}'))
-                    : null,
-                onTap: () => widget.onConversation(
-                  conversation.id,
-                  conversation.partnerDisplayName,
-                ),
-              );
-            },
-          ),
-        ),
-    ],
-  );
-
-  Widget _chatView() => Column(
-    children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(8, 8, 14, 8),
-        child: Row(
-          children: [
-            IconButton(
-              tooltip: 'Quay lại danh sách',
-              onPressed: () {
-                widget.onConversation('', '');
-                _loadConversations();
-              },
-              icon: const Icon(Icons.arrow_back_rounded),
-            ),
-            _Avatar(name: widget.conversationName ?? 'I', size: 40),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                widget.conversationName ?? 'Trò chuyện',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-            ),
-            IconButton(
-              tooltip: 'Tải lại tin nhắn',
-              onPressed: _loadMessages,
-              icon: const Icon(Icons.refresh_rounded),
-            ),
-          ],
-        ),
-      ),
-      const Divider(height: 1),
-      if (_olderCursor != null)
-        TextButton(
-          onPressed: _loadingOlder ? null : _loadOlder,
-          child: Text(_loadingOlder ? 'Đang tải…' : 'Tin nhắn trước đó'),
-        ),
-      if (_loadingMessages && _messages.isEmpty)
-        const Expanded(child: Center(child: CircularProgressIndicator()))
-      else if (_error != null && _messages.isEmpty)
-        Expanded(
-          child: _ErrorCard(message: _error!, onRetry: _loadMessages),
-        )
-      else
-        Expanded(
-          child: _messages.isEmpty
-              ? const Center(child: Text('Hãy gửi lời chào để bắt đầu.'))
-              : ListView.builder(
-                  controller: _scroll,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 18,
-                    vertical: 14,
+        .toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 10, 12, 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Tin nhắn',
+                  style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
                   ),
-                  itemCount: _messages.length,
-                  itemBuilder: (context, index) {
-                    final item = _messages[index];
-                    final own = item.senderId == widget.user!.id;
-                    return Align(
-                      alignment: own
-                          ? Alignment.centerRight
-                          : Alignment.centerLeft,
-                      child: Container(
-                        margin: const EdgeInsets.only(bottom: 9),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 10,
-                        ),
-                        constraints: const BoxConstraints(maxWidth: 520),
-                        decoration: BoxDecoration(
-                          color: own
-                              ? Theme.of(context).colorScheme.primaryContainer
-                              : Theme.of(
-                                  context,
-                                ).colorScheme.surfaceContainerHighest,
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              item.body,
-                              style: Theme.of(
-                                context,
-                              ).textTheme.bodyLarge?.copyWith(fontSize: 15),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Tin nhắn mới',
+                onPressed: _starting ? null : _newConversation,
+                icon: const Icon(Icons.edit_square),
+              ),
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 14),
+          child: TextField(
+            onChanged: (v) => setState(() => _inboxQuery = v),
+            decoration: const InputDecoration(
+              hintText: 'Tìm cuộc trò chuyện',
+              prefixIcon: Icon(Icons.search_rounded),
+              isDense: true,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.all(Radius.circular(28)),
+              ),
+            ),
+          ),
+        ),
+        if (_inboxError != null && _inboxLoaded)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              _inboxError!,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+        if (_loadingInbox && !_inboxLoaded)
+          const Expanded(child: Center(child: CircularProgressIndicator()))
+        else if (_inboxError != null && !_inboxLoaded)
+          Expanded(
+            child: _ErrorCard(
+              message: _inboxError!,
+              onRetry: _loadConversations,
+            ),
+          )
+        else
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: _loadConversations,
+              child: ListView.builder(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                itemCount: items.isEmpty ? 1 : items.length,
+                itemBuilder: (context, index) {
+                  if (items.isEmpty) {
+                    return Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        children: [
+                          Text(
+                            query.isEmpty
+                                ? 'Chưa có cuộc trò chuyện'
+                                : 'Không tìm thấy cuộc trò chuyện',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          if (query.isEmpty)
+                            TextButton(
+                              onPressed: _newConversation,
+                              child: const Text('Tin nhắn mới'),
                             ),
-                            if (own)
-                              Text(
-                                _isRead(item) ? 'Đã đọc' : 'Đã gửi',
-                                style: Theme.of(context).textTheme.labelSmall,
-                              ),
-                          ],
-                        ),
+                        ],
                       ),
                     );
-                  },
-                ),
-        ),
-      if (_error != null && _messages.isNotEmpty)
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-          child: Text(
-            _error!,
-            style: TextStyle(color: Theme.of(context).colorScheme.error),
-          ),
-        ),
-      const Divider(height: 1),
-      Padding(
-        padding: const EdgeInsets.all(12),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _message,
-                readOnly: _sending,
-                maxLength: 2000,
-                minLines: 1,
-                maxLines: 5,
-                decoration: const InputDecoration(
-                  hintText: 'Viết tin nhắn',
-                  counterText: '',
-                ),
+                  }
+                  final c = items[index];
+                  final unread = c.unreadCount > 0;
+                  return ListTile(
+                    key: ValueKey(c.id),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    selected: widget.conversationId == c.id,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
+                    leading: AccountAvatar(
+                      api: widget.api,
+                      name: c.partnerDisplayName,
+                      mediaId: c.partnerAvatarId,
+                      size: 56,
+                    ),
+                    title: Text(
+                      c.partnerDisplayName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontWeight: unread ? FontWeight.w800 : FontWeight.w600,
+                      ),
+                    ),
+                    subtitle: Text(
+                      c.lastMessage.isEmpty
+                          ? '@${c.partnerHandle}'
+                          : c.lastMessage,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontWeight: unread
+                            ? FontWeight.w600
+                            : FontWeight.normal,
+                      ),
+                    ),
+                    trailing: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          _timeAgo(c.updatedAt),
+                          style: Theme.of(context).textTheme.labelSmall,
+                        ),
+                        if (unread)
+                          Badge(
+                            label: Text(
+                              c.unreadCount > 99
+                                  ? '99+'
+                                  : c.unreadCount.toString(),
+                            ),
+                          ),
+                      ],
+                    ),
+                    onTap: () =>
+                        widget.onConversation(c.id, c.partnerDisplayName),
+                  );
+                },
               ),
             ),
-            const SizedBox(width: 8),
-            IconButton.filled(
-              onPressed: _sending ? null : _send,
-              tooltip: 'Gửi tin nhắn',
-              icon: _sending
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.send_rounded),
-            ),
-          ],
+          ),
+      ],
+    );
+  }
+
+  String _clock(String input) {
+    final d = DateTime.tryParse(input)?.toLocal();
+    return d == null
+        ? ''
+        : '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+  }
+
+  String _day(String input) {
+    final d = DateTime.parse(input).toLocal();
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final days = today.difference(DateTime(d.year, d.month, d.day)).inDays;
+    return days == 0
+        ? 'Hôm nay'
+        : days == 1
+        ? 'Hôm qua'
+        : '${d.day}/${d.month}/${d.year}';
+  }
+
+  Widget _chatView() {
+    final scheme = Theme.of(context).colorScheme;
+    final c = _conversations
+        .where((c) => c.id == widget.conversationId)
+        .firstOrNull;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(4, 4, 12, 8),
+          child: Row(
+            children: [
+              IconButton(
+                tooltip: 'Quay lại danh sách',
+                onPressed: () {
+                  widget.onConversation('', '');
+                  _loadConversations(silent: true);
+                },
+                icon: const Icon(Icons.arrow_back_rounded),
+              ),
+              AccountAvatar(
+                api: widget.api,
+                name: widget.conversationName ?? 'I',
+                mediaId: c?.partnerAvatarId,
+                size: 42,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  widget.conversationName ?? 'Trò chuyện',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Tải lại tin nhắn',
+                onPressed: () => _loadMessages(silent: true),
+                icon: const Icon(Icons.refresh_rounded),
+              ),
+            ],
+          ),
         ),
-      ),
-    ],
-  );
+        const Divider(height: 1),
+        if (_loadingMessages && !_messagesLoaded)
+          const Expanded(child: Center(child: CircularProgressIndicator()))
+        else if (_error != null && _messages.isEmpty)
+          Expanded(
+            child: _ErrorCard(message: _error!, onRetry: _loadMessages),
+          )
+        else
+          Expanded(
+            child: _messages.isEmpty
+                ? const Center(child: Text('Hãy gửi lời chào để bắt đầu.'))
+                : ListView.builder(
+                    key: const ValueKey('message-history'),
+                    controller: _scroll,
+                    reverse: true,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 16,
+                    ),
+                    itemCount:
+                        _messages.length + (_olderCursor == null ? 0 : 1),
+                    itemBuilder: (context, reverseIndex) {
+                      if (reverseIndex == _messages.length) {
+                        return TextButton(
+                          onPressed: _loadingOlder ? null : _loadOlder,
+                          child: Text(
+                            _loadingOlder ? 'Đang tải…' : 'Tin nhắn trước đó',
+                          ),
+                        );
+                      }
+                      final index = _messages.length - reverseIndex - 1;
+                      final item = _messages[index],
+                          own = item.senderId == widget.user!.id;
+                      final lastInGroup =
+                          index == _messages.length - 1 ||
+                          _messages[index + 1].senderId != item.senderId;
+                      final dayStart =
+                          index == 0 ||
+                          _day(_messages[index - 1].createdAt) !=
+                              _day(item.createdAt);
+                      return Column(
+                        key: ValueKey(item.id),
+                        children: [
+                          if (dayStart)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              child: Text(
+                                _day(item.createdAt),
+                                style: Theme.of(context).textTheme.labelSmall,
+                              ),
+                            ),
+                          Align(
+                            alignment: own
+                                ? Alignment.centerRight
+                                : Alignment.centerLeft,
+                            child: FractionallySizedBox(
+                              widthFactor: .84,
+                              alignment: own
+                                  ? Alignment.centerRight
+                                  : Alignment.centerLeft,
+                              child: Column(
+                                crossAxisAlignment: own
+                                    ? CrossAxisAlignment.end
+                                    : CrossAxisAlignment.start,
+                                children: [
+                                  GestureDetector(
+                                    onLongPress: () async {
+                                      await Clipboard.setData(
+                                        ClipboardData(text: item.body),
+                                      );
+                                      if (mounted) {
+                                        widget.onToast('Đã sao chép tin nhắn.');
+                                      }
+                                    },
+                                    child: Container(
+                                      margin: EdgeInsets.only(
+                                        bottom: lastInGroup ? 2 : 3,
+                                      ),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 15,
+                                        vertical: 10,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: own
+                                            ? scheme.surfaceContainerHighest
+                                            : scheme.surfaceContainerLow,
+                                        border: Border.all(
+                                          color: scheme.outlineVariant
+                                              .withValues(alpha: .35),
+                                        ),
+                                        borderRadius: BorderRadius.circular(22),
+                                      ),
+                                      child: Text(
+                                        item.body,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodyLarge
+                                            ?.copyWith(height: 1.4),
+                                      ),
+                                    ),
+                                  ),
+                                  if (lastInGroup)
+                                    Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                        8,
+                                        2,
+                                        8,
+                                        10,
+                                      ),
+                                      child: Text(
+                                        _clock(item.createdAt) +
+                                            (own && reverseIndex == 0
+                                                ? (_isRead(item)
+                                                      ? ' · Đã đọc'
+                                                      : ' · Đã gửi')
+                                                : ''),
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.labelSmall,
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+          ),
+        if (_error != null && _messages.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            child: Text(_error!, style: TextStyle(color: scheme.error)),
+          ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 10, 12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _message,
+                  readOnly: _sending,
+                  maxLength: 2000,
+                  minLines: 1,
+                  maxLines: 5,
+                  onChanged: (_) => setState(() {}),
+                  decoration: const InputDecoration(
+                    hintText: 'Viết tin nhắn',
+                    counterText: '',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.all(Radius.circular(26)),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton.filled(
+                tooltip: 'Gửi tin nhắn',
+                onPressed: _sending || _message.text.trim().isEmpty
+                    ? null
+                    : _send,
+                icon: _sending
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.send_rounded),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 class _HandleDialog extends StatefulWidget {
@@ -3003,8 +3507,12 @@ class ProfileScreen extends StatefulWidget {
     required this.onOpenConversation,
     required this.onAuthenticate,
     required this.onToast,
+    this.onProfileChanged,
+    this.onOpenProfile,
     super.key,
   });
+  final ValueChanged<ApiUser>? onProfileChanged;
+  final ValueChanged<String>? onOpenProfile;
   final IonicApi api;
   final ApiUser? user;
   final String? handle;
@@ -3077,6 +3585,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           .map(
             (item) => FeedPost(
               id: item.id,
+              authorAvatarId: item.authorAvatarId,
               authorId: item.authorId,
               handle: item.handle.isEmpty ? profile.handle : item.handle,
               displayName: item.displayName == 'Tài khoản'
@@ -3233,7 +3742,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     await showIonicDialog<void>(
       context: context,
       builder: (context) =>
-          _RepliesDialog(api: widget.api, post: post, onToast: widget.onToast),
+          RepliesDialog(api: widget.api, post: post, onToast: widget.onToast),
     );
     await _load();
   }
@@ -3260,6 +3769,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
+  Future<void> _connections(String kind) async {
+    final profile=_profile; if(profile==null) return;
+    final target=_target;
+    await showIonicDialog<void>(context:context,builder:(context)=>ConnectionsDialog(api:widget.api,handle:profile.handle,isSelf:profile.isSelf,initialKind:kind,
+      onOpenProfile:(handle)=>widget.onOpenProfile?.call(handle),onConversation:widget.onOpenConversation));
+    if(mounted && _target==target) await _load();
+  }
   @override
   Widget build(BuildContext context) {
     if (widget.user == null) {
@@ -3304,7 +3820,28 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   children: [
                     Row(
                       children: [
-                        _Avatar(name: profile.displayName, size: 76),
+                        if (profile.isSelf)
+                          SizedBox(
+                            width: 132,
+                            child: AvatarEditor(
+                              api: widget.api,
+                              name: profile.displayName,
+                              mediaId: profile.avatarMediaId,
+                              onSaved: (id) async {
+                                final user = await widget.api.currentUser();
+                                if (!mounted) return;
+                                widget.onProfileChanged?.call(user);
+                                await _load();
+                              },
+                            ),
+                          )
+                        else
+                          AccountAvatar(
+                            api: widget.api,
+                            name: profile.displayName,
+                            mediaId: profile.avatarMediaId,
+                            size: 76,
+                          ),
                         const SizedBox(width: 16),
                         Expanded(
                           child: Column(
@@ -3345,8 +3882,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       runSpacing: 8,
                       children: [
                         Text('${profile.postCount} bài viết'),
-                        Text('${profile.followerCount} người theo dõi'),
-                        Text('${profile.followingCount} đang theo dõi'),
+                        TextButton(onPressed:()=>_connections('followers'),child:Text('${profile.followerCount} người theo dõi')),
+                        TextButton(onPressed:()=>_connections('following'),child:Text('${profile.followingCount} đang theo dõi')),
                       ],
                     ),
                     if (!profile.isSelf) ...[

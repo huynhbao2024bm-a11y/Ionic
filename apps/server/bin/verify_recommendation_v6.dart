@@ -80,7 +80,10 @@ Future<void> main() async {
         await tx.execute(
           r'''INSERT INTO app_user(id,handle,handle_normalized,password_salt,password_hash)
           VALUES($1,$2,$2,decode(repeat('00',16),'hex'),decode(repeat('00',64),'hex'))''',
-          parameters: [authors[i], 'v6_fixture_$i'],
+          parameters: [
+            authors[i],
+            'v6_fixture_${i.toString().padLeft(3, '0')}',
+          ],
         );
         await tx.execute(
           r'INSERT INTO user_profile(user_id,display_name,visibility) VALUES($1,$2,$3)',

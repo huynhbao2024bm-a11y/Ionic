@@ -45,3 +45,9 @@ The preview has single-process request budgets and bounded upload processing. Th
 From `apps/server`: `dart analyze`, `dart run bin/verify_attachment_storage.dart`, `dart run bin/verify_preview_limits.dart`, `dart run bin/verify_migration_checksum.dart`. Database suites explicitly require separate empty verification databases and remove their synthetic fixtures.
 
 From `apps/client`: `flutter analyze`, `flutter test`, and native integration tests on an Android device/emulator. Build a phone preview with `flutter build apk --release --split-per-abi --dart-define=API_BASE_URL=https://your-api.example/api/v1`. Current release configuration uses the local debug signing key; it is a preview build, not Play Store distribution.
+
+## Android preview updates
+
+The Android client checks this repository's preview releases and can download a newer APK inside the app. Installation uses Android's permission/confirmation screen and preserves app data; do not uninstall to upgrade. Automatic downloads require an unmetered connection and data saver off. The first older APK needs one manual upgrade to receive this mechanism.
+
+Keep the signing key stable and private. Build and verify first, commit reviewed source, then run `./scripts/prepare_android_release.ps1 -Tag vX.Y.Z-preview.N`. It checks package/signatures and creates ABI-specific APKs plus `ionic-android-update.json` under ignored `.data/releases/`. Publish those four files in the matching GitHub preview release. The manifest uses the actual per-ABI APK versionCode, including Flutter's ABI offsets. Never publish signing keys, credentials or local product documents. Serialize release builds and Flutter dependency/plugin regeneration to avoid stale generated plugin registrations.

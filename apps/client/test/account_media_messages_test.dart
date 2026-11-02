@@ -195,6 +195,7 @@ void main() {
       await tester.pumpWidget(messages(api));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), 'Keep this draft');
+      await tester.pump();
       await tester.tap(find.byTooltip('Gửi tin nhắn'));
       await tester.pumpAndSettle();
       expect(find.text('Keep this draft'), findsOneWidget);
@@ -202,7 +203,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(sent.length, 2);
       expect(sent[0]['clientMessageId'], sent[1]['clientMessageId']);
-      expect(find.text('Đã gửi'), findsOneWidget);
+      expect(find.textContaining('Đã gửi'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
     },
   );

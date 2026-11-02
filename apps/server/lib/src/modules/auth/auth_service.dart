@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:math';
@@ -12,6 +13,8 @@ import 'package:ionic_server/src/modules/database/database_service.dart';
 import 'package:pointycastle/key_derivators/api.dart';
 import 'package:pointycastle/key_derivators/scrypt.dart';
 import 'package:postgres/postgres.dart';
+
+import 'handle_policy.dart';
 
 part 'account_operations.dart';
 
@@ -31,16 +34,19 @@ class AuthenticatedUser {
     required this.id,
     required this.handle,
     required this.displayName,
+    this.avatarMediaId,
   });
 
   final String id;
   final String handle;
   final String displayName;
+  final String? avatarMediaId;
 
-  Map<String, String> toJson() => {
+  Map<String, Object?> toJson() => {
     'id': id,
     'handle': handle,
     'displayName': displayName,
+    'avatarMediaId': avatarMediaId,
   };
 }
 
@@ -148,12 +154,8 @@ void _requireOnlyKeys(Map<String, Object?> input, List<String> allowed) {
   final password = input['password'] is String
       ? input['password'] as String
       : '';
-  if (!_handlePattern.hasMatch(handle)) {
-    throw const ApiException(
-      400,
-      'Handle must use 3–24 lowercase letters, numbers, or underscores.',
-    );
-  }
+  final handleError = registrationHandleError(handle);
+  if (handleError != null) throw ApiException(400, handleError);
   if (displayName.isEmpty || displayName.length > 48) {
     throw const ApiException(400, 'Display name must contain 1–48 characters.');
   }
@@ -183,6 +185,7 @@ AuthenticatedUser _toPublicUser(Map<String, dynamic> row) => AuthenticatedUser(
   id: '${row['id']}',
   handle: '${row['handle']}',
   displayName: '${row['display_name']}',
+  avatarMediaId: row['avatar_media_id'] as String?,
 );
 
 class AuthService {
@@ -245,7 +248,7 @@ class AuthService {
   Future<AuthResult> login(Map<String, Object?> input) async {
     final credentials = _parseLogin(input);
     final result = await _database.query(
-      'SELECT u.id, u.handle, u.password_salt, u.password_hash, p.display_name '
+      'SELECT u.id, u.handle, u.password_salt, u.password_hash, p.display_name, p.avatar_media_id '
       'FROM app_user u JOIN user_profile p ON p.user_id = u.id '
       r"WHERE u.handle_normalized = $1 AND u.state = 'active'",
       parameters: [credentials.handle],
@@ -288,7 +291,7 @@ class AuthService {
       throw const ApiException(401, 'Sign in to continue.');
     }
     final result = await _database.query(
-      'SELECT u.id, u.handle, p.display_name '
+      'SELECT u.id, u.handle, p.display_name, p.avatar_media_id '
       'FROM user_session s '
       'JOIN app_user u ON u.id = s.user_id '
       'JOIN user_profile p ON p.user_id = u.id '

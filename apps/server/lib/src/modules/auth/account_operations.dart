@@ -16,7 +16,7 @@ extension AccountOperations on AuthService {
     );
     final tables = <String, String>{
       'account': r'SELECT id, handle, created_at FROM app_user WHERE id = $1',
-      'profile': r'SELECT display_name, bio, visibility FROM user_profile WHERE user_id = $1',
+      'profile': r'SELECT display_name, bio, visibility, avatar_media_id FROM user_profile WHERE user_id = $1',
       'settings': r'SELECT message_permission, discoverable FROM account_setting WHERE user_id = $1',
       'posts': r'SELECT id, body, created_at, updated_at FROM content WHERE author_id = $1',
       'replies': r'SELECT id, content_id, body, created_at FROM content_reply WHERE author_id = $1',

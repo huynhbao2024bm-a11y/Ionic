@@ -30,7 +30,7 @@ class MessagesService {
       r'''SELECT c.id,
                 partner.id AS partner_id,
                 partner.handle,
-                p.display_name,
+                p.display_name, p.avatar_media_id,
                 COALESCE(latest.body, '') AS body,
                 (SELECT count(*)::int FROM direct_message unread
                  WHERE unread.conversation_id = c.id AND unread.sender_id <> $1
@@ -67,6 +67,7 @@ class MessagesService {
           'partnerId': '${value['partner_id']}',
           'partnerHandle': '${value['handle']}',
           'partnerDisplayName': '${value['display_name']}',
+          'partnerAvatarId': value['avatar_media_id'],
           'lastMessage': '${value['body']}',
           'unreadCount': value['unread_count'],
           'updatedAt': _dateTime(value['updated_at']).toUtc().toIso8601String(),
@@ -84,7 +85,7 @@ class MessagesService {
     }
     final handle = _parseHandle(input['handle'] as String);
     final targetResult = await _database.query(
-      r'''SELECT u.id, u.handle, p.display_name FROM app_user u
+      r'''SELECT u.id, u.handle, p.display_name, p.avatar_media_id FROM app_user u
           JOIN user_profile p ON p.user_id = u.id
           WHERE u.handle_normalized = $1 AND u.state = 'active' ''',
       parameters: [handle],
@@ -127,6 +128,7 @@ class MessagesService {
         'partnerId': targetId,
         'partnerHandle': '${target['handle']}',
         'partnerDisplayName': '${target['display_name']}',
+        'partnerAvatarId': target['avatar_media_id'],
         'lastMessage': '',
         'updatedAt': _dateTime(
           conversation['last_message_at'] ?? conversation['created_at'],

@@ -117,7 +117,7 @@ Future<void> main(List<String> args) async {
       'Live readiness includes database',
     );
     for (var i = 0; i < 2; i++) {
-      final handle = 'ionic_check_${_randomHex(4)}',
+      final handle = 'ionic_check_${_randomHex(4)}123',
           password = 'Aa1!${_randomHex(24)}';
       final r = await request(
         'POST',
@@ -173,6 +173,97 @@ Future<void> main(List<String> args) async {
     }
     final image = Uint8List.fromList(
       img.encodeJpg(img.Image(width: 8, height: 8), quality: 85),
+    );
+    Future<String> uploadAvatar() async {
+      final r = await request(
+        'POST',
+        'media/upload',
+        cookie: a.cookie,
+        bytes: image,
+        mediaType: 'image',
+      );
+      check(r.status == 201, 'Live avatar staging');
+      final id = (jsonDecode(utf8.decode(r.bytes)) as Map)['id'].toString();
+      mediaIds.add(id);
+      return id;
+    }
+
+    for (final handle in ['ADMIN123', 'no_digits']) {
+      check(
+        (await request(
+              'POST',
+              'auth/register',
+              body: {
+                'handle': handle,
+                'displayName': 'Invalid registration',
+                'password': 'fictional-password-123',
+              },
+            )).status ==
+            400,
+        'Live reserved/digit handle policy',
+      );
+    }
+    final avatar = await uploadAvatar();
+    check(
+      (await request(
+            'PUT',
+            'profiles/me/avatar',
+            cookie: b.cookie,
+            body: {'mediaId': avatar},
+          )).status ==
+          400,
+      'Cross-account avatar assignment denied',
+    );
+    await json(
+      'PUT',
+      'profiles/me/avatar',
+      cookie: a.cookie,
+      body: {'mediaId': avatar},
+    );
+    check(
+      (await json(
+            'GET',
+            'auth/me',
+            cookie: a.cookie,
+          ))['user']['avatarMediaId'] ==
+          avatar,
+      'Live avatar persists',
+    );
+    check(
+      (await request('GET', 'media/$avatar/file', cookie: b.cookie)).status ==
+          200,
+      'Follower reads cloud avatar',
+    );
+    check(
+      (await request('GET', 'media/$avatar/file')).status == 404,
+      'Guest private-avatar denial',
+    );
+    final replacement = await uploadAvatar();
+    await json(
+      'PUT',
+      'profiles/me/avatar',
+      cookie: a.cookie,
+      body: {'mediaId': replacement},
+    );
+    check(
+      (await request('GET', 'media/$avatar/file', cookie: a.cookie)).status ==
+          404,
+      'Replaced avatar inaccessible',
+    );
+    await json(
+      'PUT',
+      'profiles/me/avatar',
+      cookie: a.cookie,
+      body: {'mediaId': null},
+    );
+    check(
+      (await request(
+            'GET',
+            'media/$replacement/file',
+            cookie: a.cookie,
+          )).status ==
+          404,
+      'Removed avatar inaccessible',
     );
     final uploaded = await request(
       'POST',
@@ -262,6 +353,19 @@ Future<void> main(List<String> args) async {
       expected: 201,
     );
     check(reply['id'] is String, 'Voice reply persists');
+    final replies = await json(
+      'GET',
+      'posts/$postId/replies?limit=20',
+      cookie: a.cookie,
+    );
+    check(
+      (replies['items'] as List).any(
+        (r) =>
+            (r as Map)['id'] == reply['id'] &&
+            (r['attachments'] as List).isNotEmpty,
+      ),
+      'Comment list contains persisted voice reply',
+    );
     final voiceRead = await request(
       'GET',
       'media/$voiceId/file',
@@ -339,6 +443,34 @@ Future<void> main(List<String> args) async {
     check(
       (await json('GET', 'auth/me', cookie: a.cookie))['user']['id'] == a.id,
       'Live session restoration endpoint',
+    );
+    final followers = await json(
+      'GET',
+      'profiles/${a.handle}/followers',
+      cookie: a.cookie,
+    );
+    check(
+      (followers['items'] as List).any((i) => (i as Map)['handle'] == b.handle),
+      'Live follower list',
+    );
+    final following = await json(
+      'GET',
+      'profiles/${b.handle}/following',
+      cookie: b.cookie,
+    );
+    check(
+      (following['items'] as List).any((i) => (i as Map)['handle'] == a.handle),
+      'Live following list',
+    );
+    await json('DELETE', 'profiles/me/followers/${b.handle}', cookie: a.cookie);
+    check(
+      (await request(
+            'GET',
+            'profiles/${a.handle}/followers',
+            cookie: b.cookie,
+          )).status ==
+          404,
+      'Removing follower revokes private graph access',
     );
     await cleanup();
     check(

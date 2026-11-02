@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'ionic_api.dart';
+import 'account_avatar.dart';
+import 'search_history_store.dart';
 import 'dialogs.dart';
 import 'media_composer.dart';
 import 'screens.dart';
@@ -10,6 +12,7 @@ import 'settings_screen.dart';
 import 'account_controls.dart';
 import 'client_preferences.dart';
 import 'draft_store.dart';
+import 'app_updates.dart';
 
 const _brand = Color(0xff4c5fdb);
 const _accent = Color(0xff8052e8);
@@ -302,6 +305,7 @@ class _IonicShellState extends State<IonicShell> {
     final oldId = _user?.id;
     if (oldId != null) {
       unawaited(DraftStore.clear(oldId).catchError((Object _) {}));
+      unawaited(SearchHistoryStore.clear(oldId).catchError((Object _) {}));
     }
     PaintingBinding.instance.imageCache.clear();
     PaintingBinding.instance.imageCache.clearLiveImages();
@@ -341,6 +345,7 @@ class _IonicShellState extends State<IonicShell> {
   }
 
   void _selectPage(_Page page) {
+    if (_page == page && page == _Page.messages) return;
     setState(() {
       _page = page;
       _profileHandle = null;
@@ -401,6 +406,8 @@ class _IonicShellState extends State<IonicShell> {
       user: _user,
       handle: _profileHandle,
       onOpenConversation: _openConversation,
+      onOpenProfile: _openProfile,
+      onProfileChanged: _profileChanged,
       onAuthenticate: _authenticate,
       onToast: _toast,
     ),
@@ -469,13 +476,18 @@ class _IonicShellState extends State<IonicShell> {
                 Expanded(
                   child: Column(
                     children: [
-                      _TopBar(
-                        user: _user,
-                        busy: _checkingSession,
-                        onSignIn: () => _authenticate(mode: 'login'),
-                        onOpenSettings: _openSettings,
-                        onSignOut: _signOut,
-                      ),
+                      const AppUpdateBanner(),
+                      if (_page != _Page.messages ||
+                          _openConversationId == null ||
+                          _openConversationId!.isEmpty)
+                        _TopBar(
+                          api: _api,
+                          user: _user,
+                          busy: _checkingSession,
+                          onSignIn: () => _authenticate(mode: 'login'),
+                          onOpenSettings: _openSettings,
+                          onSignOut: _signOut,
+                        ),
                       if (_sessionError != null && _user == null)
                         MaterialBanner(
                           content: Text(_sessionError!),
@@ -494,7 +506,10 @@ class _IonicShellState extends State<IonicShell> {
               ],
             ),
           ),
-          bottomNavigationBar: wide
+          bottomNavigationBar:
+              wide ||
+                  (_page == _Page.messages &&
+                      (_openConversationId?.isNotEmpty ?? false))
               ? null
               : NavigationBar(
                   selectedIndex: _destination,
@@ -522,7 +537,9 @@ class _IonicShellState extends State<IonicShell> {
 }
 
 class _TopBar extends StatelessWidget {
+  final IonicApi api;
   const _TopBar({
+    required this.api,
     required this.user,
     required this.busy,
     required this.onSignIn,
@@ -585,12 +602,10 @@ class _TopBar extends StatelessWidget {
                 child: Text('Đăng xuất'),
               ),
             ],
-            child: CircleAvatar(
-              backgroundColor: Theme.of(context).brightness == Brightness.dark
-                  ? _darkAction
-                  : _brand,
-              foregroundColor: Colors.white,
-              child: Text(user!.displayName.characters.first.toUpperCase()),
+            child: AccountAvatar(
+              api: api,
+              name: user!.displayName,
+              mediaId: user!.avatarMediaId,
             ),
           ),
       ],
@@ -831,10 +846,20 @@ class _AuthDialogState extends State<_AuthDialog> {
                   labelText: 'Tên tài khoản',
                   prefixText: '@',
                 ),
-                validator: (value) =>
-                    RegExp(r'^[A-Za-z0-9_]{3,24}$').hasMatch(value ?? '')
-                    ? null
-                    : 'Dùng 3–24 ký tự: chữ, số hoặc dấu gạch dưới.',
+                validator: (value) {
+                  final handle = (value ?? '').trim().toLowerCase();
+                  if (!RegExp(r'^[a-z0-9_]{3,24}$').hasMatch(handle)) {
+                    return 'Dùng 3–24 ký tự: chữ, số hoặc dấu gạch dưới.';
+                  }
+                  if (_register && handle.contains('admin')) {
+                    return 'Tên này được dành riêng.';
+                  }
+                  if (_register &&
+                      RegExp(r'[0-9]').allMatches(handle).length < 3) {
+                    return 'Tên tài khoản cần ít nhất 3 chữ số.';
+                  }
+                  return null;
+                },
               ),
               const SizedBox(height: 12),
               TextFormField(

@@ -47,7 +47,8 @@ class _VoicePlayerState extends State<VoicePlayer> with WidgetsBindingObserver {
         _loaded = true;
       }
       if (_disposed) return;
-      if (_player.playing) {
+      if (_player.playing &&
+          _player.processingState != ProcessingState.completed) {
         await _player.pause();
       } else {
         if (_active != null && _active != _player) await _active!.pause();
@@ -63,14 +64,16 @@ class _VoicePlayerState extends State<VoicePlayer> with WidgetsBindingObserver {
         unawaited(
           _player.play().catchError((Object _) {
             if (mounted) {
-              setState(
-                () => _error = 'Không phát được âm thanh. Nhấn để thử lại.',
-              );
+              setState(() {
+                _loaded = false;
+                _error = 'Không phát được âm thanh. Nhấn để thử lại.';
+              });
             }
           }),
         );
       }
     } catch (_) {
+      _loaded = false;
       if (mounted) {
         setState(() => _error = 'Không tải được âm thanh. Nhấn để thử lại.');
       }
@@ -99,7 +102,9 @@ class _VoicePlayerState extends State<VoicePlayer> with WidgetsBindingObserver {
         child: Row(
           children: [
             IconButton(
-              tooltip: state.data?.playing == true
+              tooltip:
+                  state.data?.playing == true &&
+                      state.data?.processingState != ProcessingState.completed
                   ? 'Tạm dừng âm thanh'
                   : 'Phát âm thanh',
               onPressed: _loading ? null : _toggle,

@@ -161,7 +161,7 @@ class MediaService {
     if (!_uuidPattern.hasMatch(inputId)) {
       throw const ApiException(400, 'Attachment ID is invalid.');
     }
-    final result = await _database.query(
+    var result = await _database.query(
       r'''SELECT a.storage_key, a.media_type, a.mime_type, a.byte_size
          FROM media_asset a
          JOIN content_attachment ca ON ca.media_asset_id = a.id
@@ -186,6 +186,19 @@ class MediaService {
            ))''',
       parameters: [inputId, viewerId],
     );
+    if (result.isEmpty) {
+      result = await _database.query(
+        r'''SELECT a.storage_key, a.media_type, a.mime_type, a.byte_size
+        FROM media_asset a JOIN user_profile p ON p.avatar_media_id=a.id
+        JOIN app_user u ON u.id=p.user_id AND u.state='active'
+        WHERE a.id=$1 AND a.owner_id=u.id AND a.media_type='image' AND a.processing_state='ready'
+          AND (p.visibility='public' OR u.id=$2 OR EXISTS(
+            SELECT 1 FROM account_follow f WHERE f.follower_id=$2 AND f.followed_id=u.id))
+          AND ($2::uuid IS NULL OR NOT EXISTS(SELECT 1 FROM account_block b
+            WHERE (b.blocker_id=$2 AND b.blocked_id=u.id) OR (b.blocker_id=u.id AND b.blocked_id=$2)))''',
+        parameters: [inputId, viewerId],
+      );
+    }
     if (result.isEmpty) {
       throw const ApiException(404, 'Attachment was not found.');
     }
@@ -237,6 +250,9 @@ class MediaService {
               WHERE candidate.created_at < now() - interval '24 hours'
                 AND NOT EXISTS (
                   SELECT 1 FROM content_attachment ca WHERE ca.media_asset_id = candidate.id
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM user_profile p WHERE p.avatar_media_id = candidate.id
                 )
               ORDER BY candidate.created_at
               LIMIT 100

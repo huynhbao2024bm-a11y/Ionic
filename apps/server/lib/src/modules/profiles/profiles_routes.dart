@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:ionic_server/src/http/api_exception.dart';
 import 'package:ionic_server/src/http/request_body.dart';
 import 'package:ionic_server/src/modules/auth/auth_routes.dart';
 import 'package:ionic_server/src/modules/auth/auth_service.dart';
@@ -12,6 +13,49 @@ Handler createProfilesRoutes(DatabaseService database) {
   final auth = AuthService(database);
   final profiles = ProfilesService(database);
   final router = Router()
+    ..get(
+      '/<handle>/followers',
+      (Request request, String handle) async => _json(
+        200,
+        await profiles.connections(
+          (await requireAuthenticatedUser(request, auth)).id,
+          handle,
+          'followers',
+          request.url.queryParameters['cursor'],
+        ),
+      ),
+    )
+    ..get(
+      '/<handle>/following',
+      (Request request, String handle) async => _json(
+        200,
+        await profiles.connections(
+          (await requireAuthenticatedUser(request, auth)).id,
+          handle,
+          'following',
+          request.url.queryParameters['cursor'],
+        ),
+      ),
+    )
+    ..delete(
+      '/me/followers/<handle>',
+      (Request request, String handle) => _change(
+        request,
+        handle,
+        auth,
+        profiles,
+        profiles.removeFollower,
+        statusCode: 200,
+      ),
+    )
+    ..put('/me/avatar', (Request request) async {
+      final user = await requireAuthenticatedUser(request, auth);
+      final input = await readJsonObject(request);
+      if (input.length != 1 || !input.containsKey('mediaId')) {
+        throw const ApiException(400, 'Avatar details are invalid.');
+      }
+      return _json(200, await profiles.setAvatar(user.id, input['mediaId']));
+    })
     ..patch('/me', (Request request) => _updateMe(request, auth, profiles))
     ..get('/search', (Request request) => _search(request, auth, profiles))
     ..get(
@@ -91,6 +135,7 @@ Future<Response> _updateMe(
       'id': user.id,
       'handle': user.handle,
       'displayName': profile['displayName'],
+      'avatarMediaId': profile['avatarMediaId'],
     },
     'profile': profile,
   });
@@ -165,5 +210,8 @@ Future<Response> _change(
 Response _json(int statusCode, Object value) => Response(
   statusCode,
   body: jsonEncode(value),
-  headers: const {'content-type': 'application/json; charset=utf-8'},
+  headers: const {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'private, no-store',
+  },
 );

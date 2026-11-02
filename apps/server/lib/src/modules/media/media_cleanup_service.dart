@@ -58,6 +58,7 @@ class MediaCleanupService {
     await database.query('''DELETE FROM media_asset WHERE id IN(
       SELECT a.id FROM media_asset a WHERE a.created_at<now()-interval '24 hours'
         AND NOT EXISTS(SELECT 1 FROM content_attachment c WHERE c.media_asset_id=a.id)
+        AND NOT EXISTS(SELECT 1 FROM user_profile p WHERE p.avatar_media_id=a.id)
       ORDER BY a.created_at LIMIT 100 FOR UPDATE SKIP LOCKED)''');
   }
 }

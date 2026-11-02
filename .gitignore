@@ -54,3 +54,4 @@ test-results/
 *.jks
 *.keystore
 *.p12
+/apps/client/android/.kotlin/
