@@ -1,3 +1,5 @@
+import 'package:ionic_server/src/modules/trust/text_policy.dart';
+
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
@@ -155,13 +157,32 @@ void _requireOnlyKeys(Map<String, Object?> input, List<String> allowed) {
       ? input['password'] as String
       : '';
   final handleError = registrationHandleError(handle);
-  if (handleError != null) throw ApiException(400, handleError);
+  if (handleError != null) {
+    throw ApiException(
+      400,
+      handleError,
+      code: handle.contains('admin')
+          ? 'HANDLE_RESERVED'
+          : RegExp(r'^[a-z0-9_]{3,24}$').hasMatch(handle)
+          ? 'HANDLE_DIGITS_REQUIRED'
+          : 'HANDLE_INVALID',
+    );
+  }
   if (displayName.isEmpty || displayName.length > 48) {
-    throw const ApiException(400, 'Display name must contain 1–48 characters.');
+    throw const ApiException(
+      400,
+      'Display name must contain 1–48 characters.',
+      code: 'DISPLAY_NAME_INVALID',
+    );
   }
   if (password.length < 12 || password.length > 128) {
-    throw const ApiException(400, 'Password must contain 12–128 characters.');
+    throw const ApiException(
+      400,
+      'Password must contain 12–128 characters.',
+      code: 'PASSWORD_INVALID',
+    );
   }
+  requireLinkFree(displayName);
   return (handle: handle, displayName: displayName, password: password);
 }
 
@@ -196,7 +217,11 @@ class AuthService {
   Future<AuthResult> register(Map<String, Object?> input) async {
     if (Platform.environment['APP_ENV'] == 'production' &&
         Platform.environment['ALLOW_SIGNUP'] != 'true') {
-      throw const ApiException(503, 'Account registration is disabled.');
+      throw const ApiException(
+        503,
+        'Account registration is disabled.',
+        code: 'SIGNUP_DISABLED',
+      );
     }
 
     final registration = _parseRegistration(input);
@@ -239,7 +264,11 @@ class AuthService {
       return AuthResult(user: user, token: token);
     } on ServerException catch (error) {
       if (error.code == '23505') {
-        throw const ApiException(409, 'That handle is already in use.');
+        throw const ApiException(
+          409,
+          'That handle is already in use.',
+          code: 'HANDLE_TAKEN',
+        );
       }
       rethrow;
     }

@@ -149,6 +149,50 @@ Future<void> main(List<String> args) async {
       );
     }
     final a = actors[0], b = actors[1];
+    check(
+      (await request('POST', 'health/heartbeat-lease', body: {})).status == 401,
+      'Guest cannot claim technical heartbeat',
+    );
+    check(
+      (await json('GET', 'reports/reviewer', cookie: a.cookie))['enabled'] ==
+          false,
+      'Normal account has no reviewer permission',
+    );
+    check(
+      (await request('GET', 'reports/queue', cookie: a.cookie)).status == 403,
+      'Live review queue is privileged',
+    );
+    final lease = await json(
+      'POST',
+      'health/heartbeat-lease',
+      cookie: a.cookie,
+      body: {},
+    );
+    if (lease['enabled'] == true) {
+      check(
+        (await json(
+              'POST',
+              'health/heartbeat-lease',
+              cookie: b.cookie,
+              body: {},
+            ))['enabled'] ==
+            false,
+        'Only one secondary heartbeat account',
+      );
+      await json(
+        'POST',
+        'health/heartbeat',
+        cookie: a.cookie,
+        body: {'leaseToken': lease['leaseToken']},
+      );
+      check(true, 'Authorized technical heartbeat works');
+      await json(
+        'POST',
+        'health/heartbeat-release',
+        cookie: a.cookie,
+        body: {'leaseToken': lease['leaseToken']},
+      );
+    }
     await json(
       'POST',
       'profiles/${a.handle}/follow',
@@ -295,6 +339,77 @@ Future<void> main(List<String> args) async {
     );
     final postId = '${post['id']}';
     check(
+      (await json('GET', 'posts/$postId', cookie: b.cookie))['id'] == postId,
+      'Live authorized post detail',
+    );
+    check(
+      (await request('GET', 'posts/$postId')).status == 404,
+      'Private detail denied to guest',
+    );
+    check(
+      ((await json(
+                    'POST',
+                    'posts/sync',
+                    cookie: b.cookie,
+                    body: {
+                      'ids': [postId],
+                    },
+                  ))['items']
+                  as List)
+              .length ==
+          1,
+      'Live bounded post sync',
+    );
+    check(
+      (await request(
+            'PATCH',
+            'posts/$postId',
+            cookie: b.cookie,
+            body: {'body': 'Not mine'},
+          )).status ==
+          404,
+      'Other account cannot edit post',
+    );
+    for (final path in ['posts/', 'posts/$postId/replies']) {
+      final rejected = await request(
+        'POST',
+        path,
+        cookie: a.cookie,
+        body: {'body': 'https://example.com'},
+      );
+      check(
+        rejected.status == 400 &&
+            (jsonDecode(utf8.decode(rejected.bytes)) as Map)['code'] ==
+                'LINK_NOT_ALLOWED',
+        'Live link publication denied',
+      );
+    }
+    final report = await json(
+      'POST',
+      'reports/',
+      cookie: b.cookie,
+      body: {
+        'contentId': postId,
+        'reason': 'other',
+        'details': 'Báo cáo kiểm tra trong nhóm riêng tư',
+      },
+      expected: 201,
+    );
+    check(
+      report['status'] == 'received',
+      'Live private-cohort report persists',
+    );
+    check(
+      (await request(
+            'POST',
+            'reports/${report['id']}/resolve',
+            cookie: b.cookie,
+            body: {'action': 'remove', 'reason': 'Not authorized'},
+          )).status ==
+          403,
+      'Unprivileged moderation decision denied live',
+    );
+    check(
       postId ==
           (await json(
             'POST',
@@ -304,6 +419,17 @@ Future<void> main(List<String> args) async {
             expected: 201,
           ))['id'],
       'Live publication retry creates no duplicate',
+    );
+    await json(
+      'PATCH',
+      'posts/$postId',
+      cookie: a.cookie,
+      body: {'body': 'Bài kiểm tra riêng tư về mèo, đã chỉnh sửa.'},
+    );
+    check(
+      (await json('GET', 'posts/$postId', cookie: b.cookie))['body'] ==
+          'Bài kiểm tra riêng tư về mèo, đã chỉnh sửa.',
+      'Live own edit persists',
     );
     final file = await request('GET', 'media/$imageId/file', cookie: b.cookie);
     check(
@@ -353,6 +479,20 @@ Future<void> main(List<String> args) async {
       expected: 201,
     );
     check(reply['id'] is String, 'Voice reply persists');
+    check(
+      ((await json(
+                    'POST',
+                    'posts/$postId/replies/sync',
+                    cookie: a.cookie,
+                    body: {
+                      'ids': [reply['id']],
+                    },
+                  ))['items']
+                  as List)
+              .length ==
+          1,
+      'Live reply synchronization',
+    );
     final replies = await json(
       'GET',
       'posts/$postId/replies?limit=20',
@@ -388,6 +528,16 @@ Future<void> main(List<String> args) async {
     );
     final conversationId = '${(c['conversation'] as Map)['id']}',
         messageId = _uuid();
+    check(
+      (await request(
+            'POST',
+            'messages/conversations/$conversationId',
+            cookie: a.cookie,
+            body: {'body': 'example.com'},
+          )).status ==
+          400,
+      'Live message link rejected',
+    );
     final message = await json(
       'POST',
       'messages/conversations/$conversationId',

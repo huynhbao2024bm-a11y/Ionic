@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'ionic_api.dart';
 import 'dialogs.dart';
 import 'client_preferences.dart';
+import 'post_detail.dart';
 
 class AccountControls extends StatefulWidget {
   const AccountControls({
@@ -356,7 +357,12 @@ class _AccountControlsState extends State<AccountControls> {
       DateTime.tryParse(raw)?.toLocal().toString().split('.').first ?? raw;
   Future<void> _activity(bool saved) => showIonicDialog<void>(
     context: context,
-    builder: (_) => AccountActivityDialog(api: widget.api, saved: saved),
+    builder: (_) => AccountActivityDialog(
+      api: widget.api,
+      saved: saved,
+      userId: widget.userId,
+      onToast: widget.onToast,
+    ),
   );
 }
 
@@ -688,10 +694,14 @@ class AccountActivityDialog extends StatefulWidget {
   const AccountActivityDialog({
     required this.api,
     required this.saved,
+    this.userId,
+    this.onToast,
     super.key,
   });
   final IonicApi api;
   final bool saved;
+  final String? userId;
+  final ValueChanged<String>? onToast;
   @override
   State<AccountActivityDialog> createState() => _AccountActivityDialogState();
 }
@@ -732,13 +742,16 @@ class _AccountActivityDialogState extends State<AccountActivityDialog> {
 
   Future<void> _action(FeedPost post, String action) async {
     if (_busy) return;
-    String? body;
     if (action == 'edit') {
-      body = await showIonicDialog<String>(
+      final saved = await showIonicDialog<bool>(
         context: context,
-        builder: (_) => _EditPostDialog(body: post.body),
+        builder: (_) => EditPostDialog(
+          body: post.body,
+          save: (body) => widget.api.editPost(post.id, body),
+        ),
       );
-      if (body == null) return;
+      if (saved == true && mounted) await _load();
+      return;
     }
     if (!mounted) return;
     if (action == 'delete') {
@@ -765,9 +778,7 @@ class _AccountActivityDialogState extends State<AccountActivityDialog> {
     setState(() => _busy = true);
     var succeeded = false;
     try {
-      if (action == 'edit') {
-        await widget.api.editPost(post.id, body!);
-      } else if (action == 'delete') {
+      if (action == 'delete') {
         await widget.api.deletePost(post.id);
       } else {
         await widget.api.setSaved(post.id, false);
@@ -798,6 +809,26 @@ class _AccountActivityDialogState extends State<AccountActivityDialog> {
                   const ListTile(title: Text('Chưa có bài viết.')),
                 for (final post in _items)
                   ListTile(
+                    onTap: () async {
+                      await Navigator.of(context).push<void>(
+                        MaterialPageRoute(
+                          builder: (_) => PostDetailPage(
+                            api: widget.api,
+                            initial: post,
+                            userId: widget.userId,
+                            onToast:
+                                widget.onToast ??
+                                (value) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text(value)),
+                                  );
+                                },
+                            onChanged: (_) {},
+                          ),
+                        ),
+                      );
+                      if (mounted) await _load();
+                    },
                     title: Text(post.body),
                     subtitle: Text('@${post.handle}'),
                     trailing: PopupMenuButton<String>(
@@ -841,15 +872,37 @@ class _AccountActivityDialogState extends State<AccountActivityDialog> {
   );
 }
 
-class _EditPostDialog extends StatefulWidget {
-  const _EditPostDialog({required this.body});
+class EditPostDialog extends StatefulWidget {
+  const EditPostDialog({super.key, required this.body, this.save});
   final String body;
+  final Future<void> Function(String)? save;
   @override
-  State<_EditPostDialog> createState() => _EditPostDialogState();
+  State<EditPostDialog> createState() => EditPostDialogState();
 }
 
-class _EditPostDialogState extends State<_EditPostDialog> {
+class EditPostDialogState extends State<EditPostDialog> {
   late final _text = TextEditingController(text: widget.body);
+  bool _busy = false;
+  String? _error;
+  Future<void> _save() async {
+    if (widget.save == null) {
+      Navigator.pop(context, _text.text.trim());
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.save!(_text.text.trim());
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted) setState(() => _error = apiErrorText(e));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   @override
   void dispose() {
     _text.dispose();
@@ -861,24 +914,33 @@ class _EditPostDialogState extends State<_EditPostDialog> {
     title: const Text('Sửa bài viết'),
     content: SizedBox(
       width: 450,
-      child: TextField(
-        controller: _text,
-        maxLength: 280,
-        minLines: 3,
-        maxLines: 8,
-        onChanged: (_) => setState(() {}),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _text,
+            readOnly: _busy,
+            maxLength: 280,
+            minLines: 3,
+            maxLines: 8,
+            onChanged: (_) => setState(() {}),
+          ),
+          if (_error != null)
+            Text(
+              _error!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+        ],
       ),
     ),
     actions: [
       TextButton(
-        onPressed: () => Navigator.pop(context),
+        onPressed: _busy ? null : () => Navigator.pop(context),
         child: const Text('Hủy'),
       ),
       FilledButton(
-        onPressed: _text.text.trim().isEmpty
-            ? null
-            : () => Navigator.pop(context, _text.text.trim()),
-        child: const Text('Lưu'),
+        onPressed: _busy || _text.text.trim().isEmpty ? null : _save,
+        child: Text(_busy ? 'Đang lưu…' : 'Lưu'),
       ),
     ],
   );

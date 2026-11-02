@@ -35,10 +35,15 @@ Configure these only in the server's environment:
 - `RECOMMENDATION_ADAPTIVE_ENABLED=true`, `RECOMMENDATION_MIN_RANDOM_SHARE=0.40`.
 - The owner-selected free preview sets `RECOMMENDATION_SEMANTIC_ENABLED=false`; local-model semantics needs separate compute before enabling online.
 - `WEB_ORIGINS`: only intended browser origins, when hosting a Web client.
+- Optional managed-media preview budgets: `IONIC_MEDIA_ACCOUNT_BUDGET_BYTES` (default 64 MiB) and `IONIC_MEDIA_TOTAL_BUDGET_BYTES` (default 700 MiB). Staged allocations count; unresolved physical deletion temporarily blocks uploads.
 
 Apply migrations before starting the service. Check `GET /api/v1/health/ready`; a successful build alone does not prove a working database or object store. Validate actual upload/read/delete and account flows before distributing the preview.
 
 The preview has single-process request budgets and bounded upload processing. These do not replace full abuse prevention, moderation operations, backup/restore or a production signing/release review. Free hosting can sleep and require a cold start.
+
+Explicit private reviewer membership enables the reported-content queue and reasoned takedowns; a handle alone grants no role. Provision the verified owner privately after migrations. New user-authored publication fields reject recognizable links, including in messages. Current post/comment reads recheck authorization; foreground synchronization does not allocate new feed views.
+
+Technical connection heartbeats use one fixed verified-owner slot plus one atomic temporary app-instance lease. Only these two automatic senders can renew, at ten-minute foreground intervals; data saver/background/logout stops the client and expired leases are cleared. This produces no synthetic engagement and cannot guarantee uptime with closed apps or provider restarts. Normal users can still use the app. Auth forms warm safe readiness reads before writing and never automatically repeat an uncertain registration.
 
 ## Verification
 

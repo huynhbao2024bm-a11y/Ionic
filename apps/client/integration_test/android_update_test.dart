@@ -17,6 +17,8 @@ void main() {
         reason:
             'Run the non-split profile harness after publishing the intended split-ABI preview.',
       );
+      const expectedVersion = String.fromEnvironment('EXPECTED_UPDATE_VERSION');
+      if (expectedVersion.isNotEmpty) expect(release!.version, expectedVersion);
       var progress = 0.0;
       final path = await service.download(
         release!,

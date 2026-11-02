@@ -19,6 +19,7 @@ import 'client_preferences.dart';
 import 'feed_attention.dart';
 import 'search_history_store.dart';
 import 'connections_dialog.dart';
+import 'post_detail.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
@@ -44,7 +45,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final _feedViewport = GlobalKey();
   late final FeedAttentionController _attention;
   final _search = TextEditingController();
@@ -52,6 +53,9 @@ class _HomeScreenState extends State<HomeScreen> {
   List<String> _history = [];
   bool _allHistory = false;
   Timer? _searchDelay;
+  Timer? _syncTimer;
+  bool _syncing = false;
+  int _syncVersion = 0;
   bool _busy = false;
   bool _searchBusy = false;
   int _accountEpoch = 0;
@@ -67,6 +71,8 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _syncTimer = Timer.periodic(const Duration(seconds: 45), (_) => _sync());
     _searchFocus.addListener(_searchFocusChanged);
     _loadHistory();
     _attention = FeedAttentionController(
@@ -111,12 +117,72 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _syncTimer?.cancel();
     _attention.dispose();
     _searchDelay?.cancel();
     _searchFocus.removeListener(_searchFocusChanged);
     _searchFocus.dispose();
     _search.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) unawaited(_sync());
+  }
+
+  Future<void> _sync() async {
+    if (_syncing ||
+        _busy ||
+        !mounted ||
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused ||
+        !(ModalRoute.of(context)?.isCurrent ?? false)) {
+      return;
+    }
+    final existing = [..._posts, ..._searchPosts].take(50).toList();
+    if (existing.isEmpty) return;
+    _syncing = true;
+    final epoch = _accountEpoch, feedEpoch = _feedEpoch;
+    final version = _syncVersion;
+    try {
+      final fresh = await widget.api.syncPosts(
+        existing.map((p) => p.id).toSet().toList(),
+      );
+      if (!mounted ||
+          epoch != _accountEpoch ||
+          feedEpoch != _feedEpoch ||
+          version != _syncVersion) {
+        return;
+      }
+      final byId = {for (final p in fresh) p.id: p},
+          requested = existing.map((p) => p.id).toSet();
+      bool changed = false;
+      List<FeedPost> update(List<FeedPost> values) => values
+          .where((p) {
+            final keep = !requested.contains(p.id) || byId.containsKey(p.id);
+            if (!keep) changed = true;
+            return keep;
+          })
+          .map((p) {
+            final next = byId[p.id];
+            if (next == null || samePostSnapshot(p, next)) return p;
+            changed = true;
+            return mergePostSnapshot(p, next);
+          })
+          .toList();
+      final posts = update(_posts), search = update(_searchPosts);
+      if (changed) {
+        setState(() {
+          _posts = posts;
+          _searchPosts = search;
+        });
+      }
+    } catch (_) {
+      /* Quiet retry; never clear content or report an unsaved success. */
+    } finally {
+      _syncing = false;
+    }
   }
 
   void _openResultProfile(String handle) {
@@ -376,6 +442,41 @@ class _HomeScreenState extends State<HomeScreen> {
       _openResultProfile(post.handle);
       return;
     }
+    if (action == 'edit' || action == 'delete') {
+      _syncVersion++;
+      if (await mutateOwnPost(
+        context,
+        widget.api,
+        post,
+        action,
+        widget.onToast,
+      )) {
+        if (!mounted) return;
+        if (action == 'delete') {
+          setState(() {
+            _posts.removeWhere((p) => p.id == post.id);
+            _searchPosts.removeWhere((p) => p.id == post.id);
+          });
+        } else {
+          try {
+            final fresh = await widget.api.post(post.id);
+            if (mounted) {
+              setState(
+                () => _updatePost(
+                  post.id,
+                  (old) => mergePostSnapshot(old, fresh),
+                ),
+              );
+            }
+          } catch (e) {
+            widget.onToast(
+              'Đã lưu bài viết; kéo xuống để tải lại nội dung mới.',
+            );
+          }
+        }
+      }
+      return;
+    }
     if (action == 'report') {
       await _report(post);
       return;
@@ -442,7 +543,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     final result = await showIonicDialog<(String, String)>(
       context: context,
-      builder: (context) => const _ReportDialog(),
+      builder: (context) => const ReportDialog(),
     );
     if (result == null) return;
     try {
@@ -455,16 +556,30 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _openReplies(FeedPost post) async {
     if (_search.text.trim().length >= 2) unawaited(_rememberSearch());
-    if (widget.user == null) {
-      await widget.onAuthenticate(mode: 'login');
-      return;
-    }
-    await showIonicDialog<void>(
-      context: context,
-      builder: (context) =>
-          RepliesDialog(api: widget.api, post: post, onToast: widget.onToast),
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => PostDetailPage(
+          api: widget.api,
+          initial: post,
+          userId: widget.user?.id,
+          onToast: widget.onToast,
+          onOpenProfile: widget.onOpenProfile,
+          onChanged: (updated) {
+            if (mounted) {
+              setState(() {
+                if (updated == null) {
+                  _posts.removeWhere((p) => p.id == post.id);
+                  _searchPosts.removeWhere((p) => p.id == post.id);
+                } else {
+                  _updatePost(post.id, (_) => updated);
+                }
+              });
+            }
+          },
+        ),
+      ),
     );
-    await _load();
+    if (mounted) await _sync();
   }
 
   @override
@@ -545,6 +660,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         controller: _attention,
                         child: PostCard(
                           post: post,
+                          isOwn: post.authorId == widget.user?.id,
                           busy:
                               _actionBusy.contains('like:${post.id}') ||
                               _actionBusy.contains('save:${post.id}'),
@@ -626,6 +742,7 @@ class _HomeScreenState extends State<HomeScreen> {
         for (final post in _searchPosts) ...[
           PostCard(
             post: post,
+            isOwn: post.authorId == widget.user?.id,
             busy: false,
             api: widget.api,
             onOpenProfile: () => _openResultProfile(post.handle),
@@ -683,18 +800,24 @@ class PostCard extends StatelessWidget {
     required this.onMenu,
     this.api,
     this.showMenu = true,
+    this.isOwn = false,
+    this.onOpen,
+    this.recommendationControls = true,
     super.key,
   });
 
   final FeedPost post;
   final bool busy;
-  final VoidCallback onOpenProfile;
+  final VoidCallback? onOpenProfile;
   final VoidCallback onLike;
   final VoidCallback onSave;
   final VoidCallback onReply;
   final ValueChanged<String> onMenu;
   final IonicApi? api;
   final bool showMenu;
+  final bool isOwn;
+  final VoidCallback? onOpen;
+  final bool recommendationControls;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -707,145 +830,167 @@ class PostCard extends StatelessWidget {
         ),
       ),
     ),
-    child: Padding(
-      padding: const EdgeInsets.fromLTRB(16, 18, 16, 7),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              InkWell(
-                onTap: onOpenProfile,
-                borderRadius: BorderRadius.circular(30),
-                child: AccountAvatar(
-                  api: api,
-                  name: post.displayName,
-                  mediaId: post.authorAvatarId,
-                ),
-              ),
-              const SizedBox(width: 11),
-              Expanded(
-                child: InkWell(
+    child: InkWell(
+      onTap: onOpen ?? onReply,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 18, 16, 7),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                InkWell(
                   onTap: onOpenProfile,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        post.displayName,
-                        style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w700),
-                      ),
-                      Text(
-                        '@${post.handle} · ${_timeAgo(post.createdAt)}',
-                        style: Theme.of(
-                          context,
-                        ).textTheme.bodySmall?.copyWith(fontSize: 13),
-                      ),
-                    ],
+                  borderRadius: BorderRadius.circular(30),
+                  child: AccountAvatar(
+                    api: api,
+                    name: post.displayName,
+                    mediaId: post.authorAvatarId,
                   ),
                 ),
+                const SizedBox(width: 11),
+                Expanded(
+                  child: InkWell(
+                    onTap: onOpenProfile,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          post.displayName,
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                        Text(
+                          '@${post.handle} · ${_timeAgo(post.createdAt)}',
+                          style: Theme.of(
+                            context,
+                          ).textTheme.bodySmall?.copyWith(fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                if (showMenu)
+                  PopupMenuButton<String>(
+                    tooltip: 'Tùy chọn bài viết',
+                    onSelected: onMenu,
+                    itemBuilder: (context) => isOwn
+                        ? const [
+                            PopupMenuItem(
+                              value: 'edit',
+                              child: Text('Sửa bài viết'),
+                            ),
+                            PopupMenuItem(
+                              value: 'delete',
+                              child: Text('Xóa bài viết'),
+                            ),
+                          ]
+                        : [
+                            if (onOpenProfile != null)
+                              const PopupMenuItem(
+                                value: 'profile',
+                                child: Text('Mở hồ sơ'),
+                              ),
+                            if (recommendationControls) ...[
+                              const PopupMenuItem(
+                                value: 'more',
+                                child: Text('Xem nội dung tương tự'),
+                              ),
+                              const PopupMenuItem(
+                                value: 'less',
+                                child: Text('Xem ít nội dung tương tự'),
+                              ),
+                              const PopupMenuItem(
+                                value: 'hide',
+                                child: Text('Ẩn bài viết'),
+                              ),
+                              const PopupMenuItem(
+                                value: 'mute',
+                                child: Text('Tắt tiếng tài khoản'),
+                              ),
+                            ],
+                            if (post.kind == 'text')
+                              const PopupMenuItem(
+                                value: 'report',
+                                child: Text('Báo cáo nội dung'),
+                              ),
+                          ],
+                  )
+                else
+                  const SizedBox(width: 48),
+              ],
+            ),
+            if (post.kind == 'short_video') ...[
+              const SizedBox(height: 14),
+              _InlineVideoPreview(api: api, videoId: post.id),
+            ],
+            if (post.body.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 15, bottom: 13),
+                child: SelectableText(
+                  post.body,
+                  onTap: onOpen ?? onReply,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyLarge?.copyWith(fontSize: 16, height: 1.6),
+                ),
               ),
-              if (showMenu)
-                PopupMenuButton<String>(
-                  tooltip: 'Tùy chọn bài viết',
-                  onSelected: onMenu,
-                  itemBuilder: (context) => [
-                    const PopupMenuItem(
-                      value: 'profile',
-                      child: Text('Mở hồ sơ'),
-                    ),
-                    const PopupMenuItem(
-                      value: 'more',
-                      child: Text('Xem nội dung tương tự'),
-                    ),
-                    const PopupMenuItem(
-                      value: 'less',
-                      child: Text('Xem ít nội dung tương tự'),
-                    ),
-                    const PopupMenuItem(
-                      value: 'hide',
-                      child: Text('Ẩn bài viết'),
-                    ),
-                    const PopupMenuItem(
-                      value: 'mute',
-                      child: Text('Tắt tiếng tài khoản'),
-                    ),
-                    if (post.kind == 'text')
-                      const PopupMenuItem(
-                        value: 'report',
-                        child: Text('Báo cáo nội dung'),
+            if (post.attachments.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: PostAttachments(api: api, attachments: post.attachments),
+              ),
+            const SizedBox(height: 3),
+            Row(
+              children: [
+                _PostAction(
+                  icon: Icons.chat_bubble_outline_rounded,
+                  label: '${post.replyCount} trả lời',
+                  onPressed: onReply,
+                ),
+                _PostAction(
+                  icon: post.liked
+                      ? Icons.favorite_rounded
+                      : Icons.favorite_border_rounded,
+                  label: '${post.likeCount} thích',
+                  active: post.liked,
+                  onPressed: busy ? null : onLike,
+                ),
+                _PostAction(
+                  icon: post.saved
+                      ? Icons.bookmark_rounded
+                      : Icons.bookmark_border_rounded,
+                  label: post.saved ? 'Đã lưu' : 'Lưu',
+                  active: post.saved,
+                  onPressed: busy ? null : onSave,
+                ),
+                _PostAction(
+                  icon: Icons.share_outlined,
+                  label: 'Chia sẻ',
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: post.body));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Đã sao chép nội dung bài viết.'),
                       ),
-                  ],
-                )
-              else
-                const SizedBox(width: 48),
-            ],
-          ),
-          if (post.kind == 'short_video') ...[
-            const SizedBox(height: 14),
-            _InlineVideoPreview(api: api, videoId: post.id),
+                    );
+                  },
+                ),
+              ],
+            ),
           ],
-          if (post.body.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 15, bottom: 13),
-              child: SelectableText(
-                post.body,
-                style: Theme.of(
-                  context,
-                ).textTheme.bodyLarge?.copyWith(fontSize: 16, height: 1.6),
-              ),
-            ),
-          if (post.attachments.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: _PostAttachments(api: api, attachments: post.attachments),
-            ),
-          const SizedBox(height: 3),
-          Row(
-            children: [
-              _PostAction(
-                icon: Icons.chat_bubble_outline_rounded,
-                label: '${post.replyCount} trả lời',
-                onPressed: onReply,
-              ),
-              _PostAction(
-                icon: post.liked
-                    ? Icons.favorite_rounded
-                    : Icons.favorite_border_rounded,
-                label: '${post.likeCount} thích',
-                active: post.liked,
-                onPressed: busy ? null : onLike,
-              ),
-              _PostAction(
-                icon: post.saved
-                    ? Icons.bookmark_rounded
-                    : Icons.bookmark_border_rounded,
-                label: post.saved ? 'Đã lưu' : 'Lưu',
-                active: post.saved,
-                onPressed: busy ? null : onSave,
-              ),
-              _PostAction(
-                icon: Icons.share_outlined,
-                label: 'Chia sẻ',
-                onPressed: () {
-                  Clipboard.setData(ClipboardData(text: post.body));
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Đã sao chép nội dung bài viết.'),
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-        ],
+        ),
       ),
     ),
   );
 }
 
-class _PostAttachments extends StatelessWidget {
-  const _PostAttachments({required this.api, required this.attachments});
+class PostAttachments extends StatelessWidget {
+  const PostAttachments({
+    super.key,
+    required this.api,
+    required this.attachments,
+  });
   final IonicApi? api;
   final List<ApiAttachment> attachments;
 
@@ -1785,7 +1930,7 @@ class _RepliesDialogState extends State<RepliesDialog> {
                                           padding: const EdgeInsets.only(
                                             top: 8,
                                           ),
-                                          child: _PostAttachments(
+                                          child: PostAttachments(
                                             api: widget.api,
                                             attachments: reply.attachments,
                                           ),
@@ -1872,13 +2017,13 @@ class _RepliesDialogState extends State<RepliesDialog> {
   );
 }
 
-class _ReportDialog extends StatefulWidget {
-  const _ReportDialog();
+class ReportDialog extends StatefulWidget {
+  const ReportDialog({super.key});
   @override
-  State<_ReportDialog> createState() => _ReportDialogState();
+  State<ReportDialog> createState() => ReportDialogState();
 }
 
-class _ReportDialogState extends State<_ReportDialog> {
+class ReportDialogState extends State<ReportDialog> {
   String _reason = 'spam';
   final _details = TextEditingController();
   @override
@@ -3754,12 +3899,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _reply(FeedPost post) async {
-    await showIonicDialog<void>(
-      context: context,
-      builder: (context) =>
-          RepliesDialog(api: widget.api, post: post, onToast: widget.onToast),
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => PostDetailPage(
+          api: widget.api,
+          initial: post,
+          userId: widget.user?.id,
+          onToast: widget.onToast,
+          onOpenProfile: widget.onOpenProfile,
+          onChanged: (_) {},
+        ),
+      ),
     );
-    await _load();
+    if (mounted) await _load();
   }
 
   Future<void> _removeManagedAccount(
@@ -3977,6 +4129,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             for (final post in _posts) ...[
               PostCard(
                 post: post,
+                isOwn: post.authorId == widget.user?.id,
                 busy: _working,
                 api: widget.api,
                 showMenu: false,

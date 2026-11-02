@@ -14,6 +14,47 @@ Handler createPostsRoutes(DatabaseService database) {
   final posts = PostsService(database);
   final router = Router()
     ..post('/', (Request request) => _create(request, auth, posts))
+    ..post('/<contentId>/replies/sync', (
+      Request request,
+      String contentId,
+    ) async {
+      final input = await readJsonObject(request), ids = input['ids'];
+      final uuid = RegExp(
+        r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+        caseSensitive: false,
+      );
+      if (input.length != 1 ||
+          ids is! List ||
+          ids.isEmpty ||
+          ids.length > 50 ||
+          ids.any((i) => i is! String || !uuid.hasMatch(i))) {
+        throw const ApiException(400, 'Expected one to fifty reply IDs.');
+      }
+      return _json(
+        200,
+        await posts.listReplies(
+          await _optionalViewer(request, auth),
+          contentId,
+          50,
+          null,
+          ids: ids.cast<String>(),
+        ),
+      );
+    })
+    ..post('/sync', (Request request) async {
+      final input = await readJsonObject(request);
+      if (input.length != 1 || !input.containsKey('ids')) {
+        throw const ApiException(400, 'Expected post IDs.');
+      }
+      return _json(
+        200,
+        await posts.readVisible(
+          await _optionalViewer(request, auth),
+          input['ids'],
+          feedControls: true,
+        ),
+      );
+    })
     ..get('/public', (Request request) => _public(request, posts))
     ..get('/mine', (Request request) => _mine(request, auth, posts))
     ..get(
@@ -83,8 +124,22 @@ Handler createPostsRoutes(DatabaseService database) {
       '/<contentId>/replies',
       (Request request, String contentId) =>
           _replies(request, contentId, auth, posts),
-    );
+    )
+    ..get('/<contentId>', (Request request, String contentId) async {
+      final page = await posts.readVisible(
+        await _optionalViewer(request, auth),
+        [contentId],
+      );
+      final items = page['items'] as List;
+      if (items.isEmpty) throw const ApiException(404, 'Post was not found.');
+      return _json(200, items.first as Object);
+    });
   return router.call;
+}
+
+Future<String?> _optionalViewer(Request request, AuthService auth) async {
+  final token = readSessionToken(request.headers['cookie']);
+  return token == null ? null : (await auth.authenticate(token)).id;
 }
 
 Future<Response> _public(Request request, PostsService posts) async => _json(
@@ -107,7 +162,10 @@ int _limit(Request request) {
 Response _json(int statusCode, Object value) => Response(
   statusCode,
   body: jsonEncode(value),
-  headers: const {'content-type': 'application/json; charset=utf-8'},
+  headers: const {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+  },
 );
 
 Future<Response> _create(
@@ -233,11 +291,11 @@ Future<Response> _replies(
   AuthService auth,
   PostsService posts,
 ) async {
-  final user = await requireAuthenticatedUser(request, auth);
+  final viewerId = await _optionalViewer(request, auth);
   return _json(
     200,
     await posts.listReplies(
-      user.id,
+      viewerId,
       contentId,
       _limit(request),
       request.url.queryParameters['cursor'],

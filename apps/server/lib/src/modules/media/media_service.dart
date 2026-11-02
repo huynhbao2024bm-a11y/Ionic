@@ -1,10 +1,15 @@
+import '../trust/moderation_service.dart';
+
 import 'dart:isolate';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:image/image.dart' as img;
 import 'package:ionic_server/src/http/api_exception.dart';
 import 'package:ionic_server/src/modules/database/database_service.dart';
+
+import 'media_cleanup_service.dart';
 
 import 'attachment_storage.dart';
 
@@ -21,11 +26,28 @@ final _uuidPattern = RegExp(
 bool _uploadInProgress = false;
 
 class MediaService {
-  MediaService(this._database, {AttachmentStorage? storage})
-    : _storage = storage ?? AttachmentStorage.fromEnvironment();
+  MediaService(
+    this._database, {
+    AttachmentStorage? storage,
+    int? accountBudgetBytes,
+    int? totalBudgetBytes,
+  }) : _storage = storage ?? AttachmentStorage.fromEnvironment(),
+       _accountBudget =
+           accountBudgetBytes ??
+           int.tryParse(
+             Platform.environment['IONIC_MEDIA_ACCOUNT_BUDGET_BYTES'] ?? '',
+           ) ??
+           64 * 1024 * 1024,
+       _totalBudget =
+           totalBudgetBytes ??
+           int.tryParse(
+             Platform.environment['IONIC_MEDIA_TOTAL_BUDGET_BYTES'] ?? '',
+           ) ??
+           700 * 1024 * 1024;
 
   final DatabaseService _database;
   final AttachmentStorage _storage;
+  final int _accountBudget, _totalBudget;
 
   Future<Map<String, Object?>> upload(
     String ownerId,
@@ -52,6 +74,11 @@ class MediaService {
     Map<String, String> headers,
   ) async {
     await _cleanupExpiredStaging();
+    await MediaCleanupService(
+      _database,
+      attachmentStorage: _storage,
+      maxJobs: 8,
+    ).drainBestEffort();
     final rawMediaType = headers['x-ionic-media-type'];
     if (rawMediaType == null ||
         (rawMediaType != 'image' && rawMediaType != 'audio')) {
@@ -94,7 +121,7 @@ class MediaService {
     late final int? height;
     late final int? durationMs;
     if (mediaType == 'image') {
-      final result = await Isolate.run(() => _sanitizeJpeg(bytes));
+      final result = await _sanitizeOffThread(bytes);
       storedBytes = result.bytes;
       width = result.width;
       height = result.height;
@@ -115,23 +142,59 @@ class MediaService {
     final id = _randomUuid();
     final storageKey = _randomUuid();
     try {
-      await _database.query(
-        r'''INSERT INTO media_asset
+      await _database.transaction((tx) async {
+        await tx.execute(
+          "SELECT pg_advisory_xact_lock(hashtext('ionic:attachment-budget'))",
+        );
+        final budget = (await tx.execute(
+          r"""
+          SELECT coalesce(sum(byte_size),0)::bigint AS total,
+            coalesce(sum(byte_size) FILTER(WHERE owner_id=$1),0)::bigint AS owned,
+            EXISTS(SELECT 1 FROM media_deletion_job WHERE storage_kind='attachment') AS cleanup_pending
+          FROM media_asset""",
+          parameters: [ownerId],
+        )).first.toColumnMap();
+        if (budget['cleanup_pending'] == true) {
+          throw const ApiException(
+            503,
+            'Storage cleanup is pending.',
+            code: 'MEDIA_CLEANUP_PENDING',
+          );
+        }
+        if (_accountBudget < 1 ||
+            _totalBudget < 1 ||
+            (budget['total'] as int) + storedBytes.length > _totalBudget) {
+          throw const ApiException(
+            413,
+            'Preview storage budget is full.',
+            code: 'MEDIA_QUOTA_TOTAL',
+          );
+        }
+        if ((budget['owned'] as int) + storedBytes.length > _accountBudget) {
+          throw const ApiException(
+            413,
+            'Account storage budget is full.',
+            code: 'MEDIA_QUOTA_ACCOUNT',
+          );
+        }
+        await tx.execute(
+          r'''INSERT INTO media_asset
              (id, owner_id, storage_key, media_type, mime_type, byte_size,
               width, height, duration_ms, processing_state)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'staged')''',
-        parameters: [
-          id,
-          ownerId,
-          storageKey,
-          mediaType,
-          mimeType,
-          storedBytes.length,
-          width,
-          height,
-          durationMs,
-        ],
-      );
+          parameters: [
+            id,
+            ownerId,
+            storageKey,
+            mediaType,
+            mimeType,
+            storedBytes.length,
+            width,
+            height,
+            durationMs,
+          ],
+        );
+      });
       // Retain a private staged row before network I/O so interrupted uploads
       // can expire and enqueue deletion; the opaque ID is returned after write.
       await _storage.write(storageKey, storedBytes, mimeType);
@@ -198,6 +261,11 @@ class MediaService {
             WHERE (b.blocker_id=$2 AND b.blocked_id=u.id) OR (b.blocker_id=u.id AND b.blocked_id=$2)))''',
         parameters: [inputId, viewerId],
       );
+    }
+    if (result.isEmpty && viewerId != null) {
+      // Review access is limited to the exact reported target; no private browsing.
+      result = await ModerationService(_database)
+          .reportedMedia(inputId, viewerId);
     }
     if (result.isEmpty) {
       throw const ApiException(404, 'Attachment was not found.');
@@ -280,6 +348,10 @@ class StoredAttachment {
   final String mimeType;
   final int byteSize;
 }
+
+Future<({Uint8List bytes, int width, int height})> _sanitizeOffThread(
+  Uint8List input,
+) => Isolate.run(() => _sanitizeJpeg(input));
 
 ({Uint8List bytes, int width, int height}) _sanitizeJpeg(Uint8List input) {
   final dimensions = _jpegDimensions(input);

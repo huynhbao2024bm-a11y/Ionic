@@ -1,3 +1,5 @@
+import 'package:ionic_server/src/modules/trust/text_policy.dart';
+
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -57,6 +59,42 @@ class PostsService {
   final DatabaseService _database;
   final RecommendationSignalsService _signals;
 
+  Future<Map<String, Object?>> readVisible(
+    String? viewerId,
+    Object? input, {
+    bool feedControls = false,
+  }) async {
+    if (input is! List ||
+        input.isEmpty ||
+        input.length > 50 ||
+        input.any((id) => id is! String || !_postUuidPattern.hasMatch(id))) {
+      throw const ApiException(400, 'Expected one to fifty post IDs.');
+    }
+    final rows = await _database.query(
+      r'''
+      SELECT c.id,c.author_id,c.body,c.created_at,u.handle AS author_handle,
+        p.display_name AS author_display_name,p.avatar_media_id AS author_avatar_id,
+        (SELECT count(*)::int FROM content_reaction r WHERE r.content_id=c.id) AS like_count,
+        (SELECT count(*)::int FROM content_reply r WHERE r.content_id=c.id AND r.status='published') AS reply_count,
+        EXISTS(SELECT 1 FROM content_reaction r WHERE r.content_id=c.id AND r.user_id=$2) AS liked,
+        EXISTS(SELECT 1 FROM content_bookmark b WHERE b.content_id=c.id AND b.user_id=$2) AS saved
+      FROM content c JOIN app_user u ON u.id=c.author_id AND u.state='active'
+      JOIN user_profile p ON p.user_id=u.id
+      WHERE c.id=ANY($1::uuid[]) AND c.kind='text' AND c.status='published' AND c.deleted_at IS NULL
+        AND (p.visibility='public' OR u.id=$2 OR EXISTS(SELECT 1 FROM account_follow f WHERE f.follower_id=$2 AND f.followed_id=u.id))
+        AND NOT EXISTS(SELECT 1 FROM account_block b WHERE (b.blocker_id=$2 AND b.blocked_id=u.id) OR (b.blocker_id=u.id AND b.blocked_id=$2))
+        AND (NOT $3 OR (NOT EXISTS(SELECT 1 FROM account_mute m WHERE m.muter_id=$2 AND m.muted_id=u.id)
+          AND NOT EXISTS(SELECT 1 FROM feed_content_hide h WHERE h.user_id=$2 AND h.content_id=c.id)))
+      ORDER BY array_position($1::uuid[],c.id)''',
+      parameters: [
+        input.cast<String>().toSet().toList(),
+        viewerId,
+        feedControls,
+      ],
+    );
+    return _postPage(rows, 50, includeAuthor: true, database: _database);
+  }
+
   Future<Map<String, String>> deleteOwn(String viewerId, String inputId) async {
     final id = _parseContentId(inputId);
     await _database.query(
@@ -77,6 +115,7 @@ class PostsService {
       throw const ApiException(400, 'Post body is invalid.');
     }
     final body = unorm.nfc((input['body'] as String).trim());
+    requireLinkFree(body);
     if (body.isEmpty || body.length > 280) {
       throw const ApiException(400, 'Post body must contain 1–280 characters.');
     }
@@ -156,6 +195,7 @@ class PostsService {
       throw const ApiException(400, 'Post body must be text.');
     }
     final body = unorm.nfc((input['body'] as String).trim());
+    requireLinkFree(body);
     if (body.isEmpty || body.length > 280) {
       throw const ApiException(400, 'Post body must contain 1–280 characters.');
     }
@@ -508,6 +548,7 @@ class PostsService {
     }
     final attachmentIds = parseAttachmentIds(input['attachmentIds']);
     final body = unorm.nfc((input['body'] as String).trim());
+    requireLinkFree(body);
     if (body.isEmpty || body.length > 500) {
       throw const ApiException(400, 'Reply must contain 1–500 characters.');
     }
@@ -605,11 +646,12 @@ class PostsService {
   }
 
   Future<Map<String, Object?>> listReplies(
-    String viewerId,
+    String? viewerId,
     String inputContentId,
     int limit,
-    String? cursorInput,
-  ) async {
+    String? cursorInput, {
+    List<String>? ids,
+  }) async {
     final contentId = _parseContentId(inputContentId);
     final cursor = _parsePostsCursor(cursorInput);
     return _database.transaction((transaction) async {
@@ -621,6 +663,7 @@ class PostsService {
            JOIN app_user u ON u.id = r.author_id AND u.state = 'active'
            JOIN user_profile p ON p.user_id = u.id
            WHERE r.content_id = $1 AND r.status = 'published'
+             AND ($6::uuid[] IS NULL OR r.id=ANY($6::uuid[]))
              AND NOT EXISTS (SELECT 1 FROM account_block b WHERE
                (b.blocker_id = $5 AND b.blocked_id = r.author_id) OR (b.blocker_id = r.author_id AND b.blocked_id = $5))
              AND ($2::timestamptz IS NULL OR (r.created_at, r.id) < ($2::timestamptz, $3::uuid))
@@ -631,6 +674,7 @@ class PostsService {
           cursor?.id,
           limit + 1,
           viewerId,
+          ids,
         ],
       );
       final page = _pageRows(result, limit);
@@ -661,7 +705,7 @@ class PostsService {
 
   Future<void> _assertCanInteract(
     TxSession transaction,
-    String viewerId,
+    String? viewerId,
     String contentId,
   ) async {
     final result = await transaction.execute(

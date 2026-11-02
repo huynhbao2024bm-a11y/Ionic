@@ -13,6 +13,7 @@ import 'account_controls.dart';
 import 'client_preferences.dart';
 import 'draft_store.dart';
 import 'app_updates.dart';
+import 'preview_heartbeat.dart';
 
 const _brand = Color(0xff4c5fdb);
 const _accent = Color(0xff8052e8);
@@ -477,6 +478,7 @@ class _IonicShellState extends State<IonicShell> {
                   child: Column(
                     children: [
                       const AppUpdateBanner(),
+                      PreviewHeartbeat(api: _api, userId: _user?.id),
                       if (_page != _Page.messages ||
                           _openConversationId == null ||
                           _openConversationId!.isEmpty)
@@ -746,6 +748,7 @@ class _AuthDialogState extends State<_AuthDialog> {
   final _password = TextEditingController();
   late bool _register = widget.initialMode != 'login';
   bool _busy = false;
+  bool _connecting = false;
   String? _error;
 
   @override
@@ -763,6 +766,10 @@ class _AuthDialogState extends State<_AuthDialog> {
       _error = null;
     });
     try {
+      setState(() => _connecting = true);
+      await widget.api.prepareAuthentication();
+      if (!mounted) return;
+      setState(() => _connecting = false);
       final user = _register
           ? await widget.api.register(
               _handle.text.trim(),
@@ -772,9 +779,24 @@ class _AuthDialogState extends State<_AuthDialog> {
           : await widget.api.login(_handle.text.trim(), _password.text);
       if (mounted) Navigator.of(context).pop(user);
     } catch (error) {
-      if (mounted) setState(() => _error = apiErrorText(error));
+      if (mounted) {
+        setState(
+          () => _error =
+              _register &&
+                  error is IonicApiException &&
+                  error.statusCode == 0 &&
+                  error.code != 'SERVER_WAKING'
+              ? 'Chưa nhận được xác nhận tạo tài khoản. Thông tin vẫn được giữ; bạn có thể thử đăng nhập bằng tên và mật khẩu vừa nhập.'
+              : apiErrorText(error),
+        );
+      }
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _connecting = false;
+        });
+      }
     }
   }
 
@@ -898,6 +920,15 @@ class _AuthDialogState extends State<_AuthDialog> {
                   child: const Text('Quên mật khẩu?'),
                 ),
               const SizedBox(height: 17),
+              if (_busy)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Text(
+                    _connecting
+                        ? 'Đang kết nối máy chủ, có thể mất khoảng một phút…'
+                        : 'Đang xử lý yêu cầu…',
+                  ),
+                ),
               FilledButton(
                 onPressed: _busy ? null : _submit,
                 child: _busy

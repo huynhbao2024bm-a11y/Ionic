@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -26,11 +27,17 @@ String? jsonCursor(Object? value) {
 }
 
 class IonicApiException implements Exception {
-  const IonicApiException(this.statusCode, this.message, {this.code});
+  const IonicApiException(
+    this.statusCode,
+    this.message, {
+    this.code,
+    this.retryAfterSeconds,
+  });
 
   final int statusCode;
   final String message;
   final String? code;
+  final int? retryAfterSeconds;
 
   @override
   String toString() => message;
@@ -38,6 +45,31 @@ class IonicApiException implements Exception {
 
 String apiErrorText(Object error) {
   if (error is IonicApiException) {
+    if (error.code == 'MEDIA_QUOTA_ACCOUNT') {
+      return 'Tài khoản đã đạt giới hạn lưu trữ bản thử. Hãy xóa bớt bài hoặc tệp không cần thiết.';
+    }
+    if (error.code == 'MEDIA_QUOTA_TOTAL') {
+      return 'Kho lưu trữ bản thử gần đầy. Chưa thể tải thêm tệp.';
+    }
+    if (error.code == 'MEDIA_CLEANUP_PENDING') {
+      return 'Kho lưu trữ đang dọn tệp cũ. Vui lòng thử tải lên sau.';
+    }
+    final specific = switch (error.code) {
+      'HANDLE_RESERVED' => 'Tên tài khoản này được dành riêng.',
+      'HANDLE_DIGITS_REQUIRED' => 'Tên tài khoản cần ít nhất 3 chữ số.',
+      'HANDLE_INVALID' =>
+        'Dùng 3–24 ký tự chữ, số hoặc dấu gạch dưới cho tên tài khoản.',
+      'DISPLAY_NAME_INVALID' => 'Tên hiển thị cần từ 1 đến 48 ký tự.',
+      'PASSWORD_INVALID' => 'Mật khẩu cần từ 12 đến 128 ký tự.',
+      'SIGNUP_DISABLED' => 'Máy chủ đang tạm dừng tạo tài khoản mới.',
+      'SERVER_WAKING' =>
+        'Máy chủ chưa sẵn sàng. Vui lòng đợi khoảng một phút rồi thử lại.',
+      _ => null,
+    };
+    if (specific != null) return specific;
+    if (error.code == 'LINK_NOT_ALLOWED') {
+      return 'Không được thêm liên kết. Hãy xóa địa chỉ trang web và thử lại.';
+    }
     switch (error.statusCode) {
       case 0:
         return 'Chưa kết nối được. Vui lòng thử lại sau ít giây.';
@@ -52,7 +84,13 @@ String apiErrorText(Object error) {
       case 409:
         return 'Tên tài khoản này đã được sử dụng.';
       case 429:
-        return 'Bạn đang thao tác quá nhanh. Vui lòng đợi một lát.';
+        return error.retryAfterSeconds == null
+            ? 'Có quá nhiều yêu cầu. Vui lòng đợi một lát.'
+            : 'Có quá nhiều yêu cầu. Thử lại sau ${error.retryAfterSeconds} giây.';
+      case 500:
+      case 502:
+      case 504:
+        return 'Máy chủ chưa hoàn tất yêu cầu. Vui lòng thử lại; dữ liệu nhập vẫn được giữ.';
       case 503:
         if (error.code == 'FEED_BUSY') {
           return 'Bảng tin đang cập nhật. Vui lòng thử lại.';
@@ -63,6 +101,34 @@ String apiErrorText(Object error) {
   }
   return 'Không thể hoàn tất thao tác. Dữ liệu chưa được lưu.';
 }
+
+bool samePostSnapshot(FeedPost a, FeedPost b) =>
+    a.body == b.body &&
+    a.likeCount == b.likeCount &&
+    a.replyCount == b.replyCount &&
+    a.liked == b.liked &&
+    a.saved == b.saved &&
+    a.authorAvatarId == b.authorAvatarId &&
+    a.displayName == b.displayName &&
+    a.attachments.map((v) => v.id).join(',') ==
+        b.attachments.map((v) => v.id).join(',');
+FeedPost mergePostSnapshot(FeedPost old, FeedPost current) => FeedPost(
+  id: current.id,
+  authorId: current.authorId,
+  handle: current.handle,
+  displayName: current.displayName,
+  body: current.body,
+  createdAt: current.createdAt,
+  likeCount: current.likeCount,
+  replyCount: current.replyCount,
+  liked: current.liked,
+  saved: current.saved,
+  attachments: current.attachments,
+  kind: current.kind,
+  mimeType: current.mimeType,
+  authorAvatarId: current.authorAvatarId,
+  receiptId: old.receiptId,
+);
 
 class ApiUser {
   const ApiUser({
@@ -352,7 +418,11 @@ class IonicApi {
         await _client.send(request),
       ))().timeout(const Duration(seconds: 30));
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw _exception(response.statusCode, response.body);
+        throw _exception(
+          response.statusCode,
+          response.body,
+          retryAfter: response.headers['retry-after'],
+        );
       }
       if (response.body.isEmpty) return null;
       return jsonDecode(response.body);
@@ -363,7 +433,7 @@ class IonicApi {
     }
   }
 
-  IonicApiException _exception(int status, String body) {
+  IonicApiException _exception(int status, String body, {String? retryAfter}) {
     var message = 'Yêu cầu thất bại.';
     String? code;
     try {
@@ -377,11 +447,61 @@ class IonicApi {
     } catch (_) {
       // Keep the stable local message when the server body isn't JSON.
     }
-    return IonicApiException(status, message, code: code);
+    final seconds = int.tryParse(retryAfter ?? '');
+    return IonicApiException(
+      status,
+      message,
+      code: code,
+      retryAfterSeconds: seconds != null && seconds > 0 && seconds <= 3600
+          ? seconds
+          : null,
+    );
   }
 
-  Future<ApiUser> _account(Object? value) async =>
-      ApiUser.fromJson(asJsonMap(value)['user']);
+  Future<void> prepareAuthentication() async {
+    // Retry only a safe readiness GET. Never repeat an uncertain auth write.
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (asJsonMap(await _request('GET', 'health/ready'))['status'] ==
+            'ready') {
+          return;
+        }
+      } on IonicApiException catch (e) {
+        if (!{0, 502, 503, 504}.contains(e.statusCode)) rethrow;
+      }
+      if (attempt < 2) await Future<void>.delayed(const Duration(seconds: 2));
+    }
+    throw const IonicApiException(
+      0,
+      'Server is not ready.',
+      code: 'SERVER_WAKING',
+    );
+  }
+
+  Future<JsonMap> claimHeartbeat(String? token) async => asJsonMap(
+    await _request(
+      'POST',
+      'health/heartbeat-lease',
+      body: {'leaseToken': token},
+    ),
+  );
+  Future<void> heartbeat(String? token) async =>
+      _request('POST', 'health/heartbeat', body: {'leaseToken': token});
+  Future<void> releaseHeartbeat(String? token) async =>
+      _request('POST', 'health/heartbeat-release', body: {'leaseToken': token});
+
+  final _mediaInFlight = <String, Future<Uint8List>>{};
+  int _mediaEpoch = 0;
+  String? _mediaAccount;
+  Future<ApiUser> _account(Object? value) async {
+    final user = ApiUser.fromJson(asJsonMap(value)['user']);
+    if (_mediaAccount != user.id) {
+      _mediaAccount = user.id;
+      _mediaEpoch++;
+      _mediaInFlight.clear();
+    }
+    return user;
+  }
 
   Future<ApiUser> currentUser() async =>
       _account(await _request('GET', 'auth/me'));
@@ -409,6 +529,9 @@ class IonicApi {
   );
   Future<void> logout() async {
     await _request('POST', 'auth/logout', body: const {});
+    _mediaAccount = null;
+    _mediaEpoch++;
+    _mediaInFlight.clear();
   }
 
   Future<JsonMap> accountSettings() async =>
@@ -455,6 +578,54 @@ class IonicApi {
   );
   Future<void> deletePost(String id) async =>
       _request('DELETE', 'posts/${Uri.encodeComponent(id)}');
+  Future<FeedPost> post(String id) async => FeedPost.fromJson(
+    await _request('GET', 'posts/${Uri.encodeComponent(id)}'),
+  );
+  Future<List<FeedPost>> syncReplies(String id, List<String> ids) async =>
+      ids.isEmpty
+      ? []
+      : jsonItems(
+          await _request(
+            'POST',
+            'posts/${Uri.encodeComponent(id)}/replies/sync',
+            body: {'ids': ids},
+          ),
+        ).map(FeedPost.fromJson).toList();
+  Future<List<FeedPost>> syncPosts(List<String> ids) async => ids.isEmpty
+      ? []
+      : jsonItems(
+          await _request('POST', 'posts/sync', body: {'ids': ids}),
+        ).map(FeedPost.fromJson).toList();
+  Future<bool> reviewerPermission() async =>
+      asJsonMap(await _request('GET', 'reports/reviewer'))['enabled'] == true;
+  Future<JsonMap> reviewQueue({String? cursor}) async => asJsonMap(
+    await _request(
+      'GET',
+      'reports/queue',
+      query: cursor == null ? null : {'cursor': cursor},
+    ),
+  );
+  Future<void> resolveReport(String id, String action, String reason) async =>
+      _request(
+        'POST',
+        'reports/${Uri.encodeComponent(id)}/resolve',
+        body: {'action': action, 'reason': reason},
+      );
+  Future<void> reportReply(
+    String postId,
+    String replyId,
+    String reason,
+    String details,
+  ) async => _request(
+    'POST',
+    'reports',
+    body: {
+      'contentId': postId,
+      'replyId': replyId,
+      'reason': reason,
+      'details': details,
+    },
+  );
   Future<FeedPage> savedPosts({String? cursor}) =>
       _feed('posts/saved', cursor: cursor);
 
@@ -578,7 +749,27 @@ class IonicApi {
   Future<void> deleteStagedAttachment(String id) async =>
       _request('DELETE', 'media/${Uri.encodeComponent(id)}/staged');
 
-  Future<Uint8List> mediaBytes(String id) async {
+  Future<Uint8List> mediaBytes(String id) {
+    final key = '$_mediaEpoch:$id';
+    final pending = _mediaInFlight[key];
+    if (pending != null) return pending;
+    final work = _readMediaBytes(id);
+    _mediaInFlight[key] = work;
+    // Coalesce concurrent loads only. Every later read rechecks server ACL.
+    unawaited(
+      work.then<void>(
+        (_) {
+          if (identical(_mediaInFlight[key], work)) _mediaInFlight.remove(key);
+        },
+        onError: (Object _, StackTrace _) {
+          if (identical(_mediaInFlight[key], work)) _mediaInFlight.remove(key);
+        },
+      ),
+    );
+    return work;
+  }
+
+  Future<Uint8List> _readMediaBytes(String id) async {
     final request = http.Request(
       'GET',
       _uri('media/${Uri.encodeComponent(id)}/file'),

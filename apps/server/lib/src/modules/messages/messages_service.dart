@@ -1,3 +1,5 @@
+import 'package:ionic_server/src/modules/trust/text_policy.dart';
+
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
@@ -378,6 +380,7 @@ _ParsedMessage _parseBody(Map<String, Object?> input) {
     throw const ApiException(400, 'Message body must be text.');
   }
   final body = unorm.nfc((input['body'] as String).trim());
+  requireLinkFree(body);
   if (body.isEmpty || body.length > 2000) {
     throw const ApiException(400, 'Message must contain 1–2000 characters.');
   }

@@ -6,7 +6,13 @@ import 'attachment_storage.dart';
 /// Durable local-storage deletion queue. Only server-generated UUID keys are
 /// resolved under the configured roots. Failed files stay queued for retry.
 class MediaCleanupService {
-  MediaCleanupService(this.database);
+  MediaCleanupService(
+    this.database, {
+    this.attachmentStorage,
+    this.maxJobs = 100,
+  });
+  final AttachmentStorage? attachmentStorage;
+  final int maxJobs;
   final DatabaseService database;
 
   Future<void> drainBestEffort() async {
@@ -19,8 +25,9 @@ class MediaCleanupService {
 
   Future<int> drain() async => database.transaction((tx) async {
     final jobs = await tx.execute(
-      '''SELECT storage_kind, storage_key FROM media_deletion_job
-      ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED''',
+      r'''SELECT storage_kind, storage_key FROM media_deletion_job
+      ORDER BY created_at LIMIT $1 FOR UPDATE SKIP LOCKED''',
+      parameters: [maxJobs.clamp(1, 100)],
     );
     var removed = 0;
     for (final job in jobs) {
@@ -35,7 +42,8 @@ class MediaCleanupService {
       ).absolute.path;
       try {
         if (kind == 'attachment') {
-          await AttachmentStorage.fromEnvironment().delete(key);
+          await (attachmentStorage ?? AttachmentStorage.fromEnvironment())
+              .delete(key);
         } else {
           for (final suffix in ['', '.part']) {
             final file = File('$root${Platform.pathSeparator}$key$suffix');

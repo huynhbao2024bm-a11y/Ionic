@@ -24,6 +24,9 @@ const _requiredMigrations = <String>[
   '0017_adaptive_cascade_invalidation.sql',
   '0018_profile_avatars.sql',
   '0019_reserved_handles.sql',
+  '0020_content_moderation.sql',
+  '0021_preview_heartbeat.sql',
+  '0022_preview_heartbeat_leases.sql',
 ];
 
 class DatabaseService {

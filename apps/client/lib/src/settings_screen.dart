@@ -5,6 +5,7 @@ import 'dialogs.dart';
 import 'account_avatar.dart';
 import 'app_updates.dart';
 import 'account_controls.dart';
+import 'moderation_page.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
@@ -40,6 +41,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   List<JsonMap> _muted = [];
   final Set<String> _busyAccounts = {};
   bool _loading = true;
+  bool _reviewer = false;
   bool _paused = false;
   bool _savingPause = false;
   bool _savingTheme = false;
@@ -59,6 +61,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (oldWidget.user?.id != widget.user?.id) {
       _epoch++;
       _profile = null;
+      _reviewer = false;
       _blocked = [];
       _muted = [];
       _busyAccounts.clear();
@@ -84,6 +87,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         widget.api.feedPaused(),
         widget.api.mutedProfiles(),
         widget.api.blockedProfiles(),
+        widget.api.reviewerPermission(),
       ]);
       if (!mounted || epoch != _epoch || widget.user?.id != userId) return;
       setState(() {
@@ -91,6 +95,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _paused = values[1] as bool;
         _muted = values[2] as List<JsonMap>;
         _blocked = values[3] as List<JsonMap>;
+        _reviewer = values[4] as bool;
       });
     } catch (error) {
       if (mounted && epoch == _epoch) {
@@ -279,6 +284,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   )
                 else ...[
                   _accountSection(context),
+                  if (_reviewer)
+                    ListTile(
+                      leading: const Icon(Icons.shield_outlined),
+                      title: const Text('Kiểm duyệt nội dung'),
+                      subtitle: const Text(
+                        'Xem xét và xử lý nội dung được báo cáo',
+                      ),
+                      onTap: () => Navigator.of(context).push<void>(
+                        MaterialPageRoute(
+                          builder: (_) => ModerationPage(api: widget.api),
+                        ),
+                      ),
+                    ),
                   AccountControls(
                     key: ValueKey(user.id),
                     api: widget.api,

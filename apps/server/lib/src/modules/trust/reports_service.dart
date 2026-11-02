@@ -6,6 +6,8 @@ import 'package:ionic_server/src/modules/database/database_service.dart';
 import 'package:postgres/postgres.dart';
 import 'package:unorm_dart/unorm_dart.dart' as unorm;
 
+import 'text_policy.dart';
+
 const _reportReasons = {
   'spam',
   'harassment',
@@ -28,7 +30,8 @@ class ReportsService {
     Map<String, Object?> input,
   ) async {
     if (input.keys.any(
-      (key) => !const {'contentId', 'reason', 'details'}.contains(key),
+      (key) =>
+          !const {'contentId', 'replyId', 'reason', 'details'}.contains(key),
     )) {
       throw const ApiException(400, 'Report contains an unsupported field.');
     }
@@ -37,6 +40,11 @@ class ReportsService {
       throw const ApiException(400, 'Content ID is invalid.');
     }
     final reason = input['reason'];
+    final replyId = input['replyId'];
+    if (replyId != null &&
+        (replyId is! String || !_contentIdPattern.hasMatch(replyId))) {
+      throw const ApiException(400, 'Reply ID is invalid.');
+    }
     if (reason is! String || !_reportReasons.contains(reason)) {
       throw const ApiException(400, 'Report reason is invalid.');
     }
@@ -45,6 +53,7 @@ class ReportsService {
       throw const ApiException(400, 'Report details must be text.');
     }
     final details = unorm.nfc(rawDetails.trim());
+    requireLinkFree(details);
     if (details.length > 500) {
       throw const ApiException(
         400,
@@ -53,20 +62,37 @@ class ReportsService {
     }
 
     return _database.transaction((transaction) async {
-      await _assertReportable(transaction, reporterId, contentId);
+      await _assertReportable(
+        transaction,
+        reporterId,
+        contentId,
+        replyId as String?,
+      );
+      await transaction.execute(
+        r"""DELETE FROM content_report WHERE reporter_id=$1 AND content_id=$2
+          AND reply_id IS NOT DISTINCT FROM $3::uuid AND created_at<=now()-interval '30 days'""",
+        parameters: [reporterId, contentId, replyId],
+      );
       final inserted = await transaction.execute(
-        r'''INSERT INTO content_report (id, reporter_id, content_id, reason, details)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (reporter_id, content_id) DO NOTHING
+        r'''INSERT INTO content_report (id, reporter_id, content_id, reason, details,reply_id)
+            VALUES ($1, $2, $3, $4, $5,$6)
+            ON CONFLICT DO NOTHING
             RETURNING id, status, created_at''',
-        parameters: [_randomUuid(), reporterId, contentId, reason, details],
+        parameters: [
+          _randomUuid(),
+          reporterId,
+          contentId,
+          reason,
+          details,
+          replyId,
+        ],
       );
       final result = inserted.isNotEmpty
           ? inserted
           : await transaction.execute(
               r'''SELECT id, status, created_at FROM content_report
-                  WHERE reporter_id = $1 AND content_id = $2''',
-              parameters: [reporterId, contentId],
+                  WHERE reporter_id = $1 AND content_id = $2 AND reply_id IS NOT DISTINCT FROM $3::uuid''',
+              parameters: [reporterId, contentId, replyId],
             );
       if (result.isEmpty) {
         throw const ApiException(404, 'Content was not found.');
@@ -84,14 +110,17 @@ class ReportsService {
     TxSession transaction,
     String reporterId,
     String contentId,
+    String? replyId,
   ) async {
     final result = await transaction.execute(
       r'''SELECT c.id FROM content c
           JOIN app_user u ON u.id = c.author_id AND u.state = 'active'
           JOIN user_profile p ON p.user_id = u.id
+          LEFT JOIN content_reply r ON r.id=$3 AND r.content_id=c.id AND r.status='published'
           WHERE c.id = $1 AND c.kind = 'text' AND c.status = 'published'
-            AND c.deleted_at IS NULL AND u.id <> $2
-            AND (p.visibility = 'public' OR EXISTS (
+            AND c.deleted_at IS NULL AND COALESCE(r.author_id,u.id) <> $2
+            AND ($3::uuid IS NULL OR (r.id IS NOT NULL AND EXISTS(SELECT 1 FROM app_user a WHERE a.id=r.author_id AND a.state='active')))
+            AND (p.visibility = 'public' OR u.id=$2 OR EXISTS (
               SELECT 1 FROM account_follow f
               WHERE f.follower_id = $2 AND f.followed_id = u.id
             ))
@@ -99,9 +128,11 @@ class ReportsService {
               SELECT 1 FROM account_block b
               WHERE (b.blocker_id = $2 AND b.blocked_id = u.id)
                  OR (b.blocker_id = u.id AND b.blocked_id = $2)
+                 OR (b.blocker_id=$2 AND b.blocked_id=r.author_id)
+                 OR (b.blocker_id=r.author_id AND b.blocked_id=$2)
             )
           FOR SHARE OF c, u, p''',
-      parameters: [contentId, reporterId],
+      parameters: [contentId, reporterId, replyId],
     );
     if (result.length != 1) {
       throw const ApiException(404, 'Content was not found.');

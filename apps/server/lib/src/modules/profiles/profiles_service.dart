@@ -1,3 +1,5 @@
+import 'package:ionic_server/src/modules/trust/text_policy.dart';
+
 import 'dart:convert';
 
 import 'package:ionic_server/src/http/api_exception.dart';
@@ -167,6 +169,8 @@ class ProfilesService {
     }
     final displayName = unorm.nfc((input['displayName'] as String).trim());
     final bio = unorm.nfc((input['bio'] as String).trim());
+    requireLinkFree(displayName);
+    requireLinkFree(bio);
     if (displayName.isEmpty || displayName.runes.length > 48) {
       throw const ApiException(
         400,

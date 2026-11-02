@@ -2,7 +2,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:ionic_server/src/http/api_exception.dart';
+
 import 'http/preview_rate_limit.dart';
+
 import 'package:ionic_server/src/modules/auth/auth_routes.dart';
 import 'package:ionic_server/src/modules/database/database_service.dart';
 import 'package:ionic_server/src/modules/health/health_routes.dart';
@@ -39,7 +41,11 @@ Handler createApp({
   return const Pipeline()
       .addMiddleware(_errorBoundary())
       .addMiddleware(_originAndCors(allowedOrigins))
-      .addMiddleware(previewRateLimit(enabled:Platform.environment['APP_ENV']=='production'))
+      .addMiddleware(
+        previewRateLimit(
+          enabled: Platform.environment['APP_ENV'] == 'production',
+        ),
+      )
       .addHandler(router.call);
 }
 
