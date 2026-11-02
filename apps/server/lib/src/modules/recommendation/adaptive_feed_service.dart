@@ -176,46 +176,87 @@ extension AdaptiveFeedServing on RecommendationService {
               audienceWindowStart: window,
             ),
           );
-          final prepared = _scoreCandidateRows(
+          var prepared = _scoreCandidateRows(
             rows,
             _attentionProfile(profile, context, config, policy),
             config,
           );
-          final available = prepared.scored.where((e) {
-            final post = prepared.entries[e.candidate.id]!.post;
-            final key = post['has_attachments'] == true
-                ? null
-                : exactTextDuplicateKey('${post['body']}');
-            return key == null || !keys.contains(key);
-          }).toList();
-          final random =
-              prepared.entries.entries
-                  .where((e) => e.value.post['random_position'] != null)
-                  .toList()
-                ..sort(
-                  (a, b) => (a.value.post['random_position'] as num).compareTo(
-                    b.value.post['random_position'] as num,
-                  ),
-                );
+          final seenIds = seen.map((r) => r.first.toString()).toSet();
           final size = math.min(limit, 1000 - delivered.length);
-          final mixed = size <= 0
-              ? <MixedFeedEntry>[]
-              : mixAdaptivePage(
-                  ranked: available,
-                  randomOrderedIds: random.map((e) => e.key).toList(),
-                  pageSize: size,
-                  config: config,
-                  randomBasisPoints: adaptiveRandomBasisPoints(
-                    context.interest,
-                    policy,
-                  ),
-                  startSequence: context.sequence,
-                  topicGaps: {
-                    for (final e in context.topicInterest.entries)
-                      e.key: topicGap(e.value, policy),
-                  },
-                  lastTopicSequence: context.lastTopicSequence,
-                );
+          List<MixedFeedEntry> mixCurrent() {
+            final eligible = prepared.scored.where((e) {
+              final post = prepared.entries[e.candidate.id]!.post;
+              final key = post['has_attachments'] == true
+                  ? null
+                  : exactTextDuplicateKey(post['body'].toString());
+              return key == null || !keys.contains(key);
+            }).toList();
+            final available = [
+              ...eligible.where((e) => !seenIds.contains(e.candidate.id)),
+              ...eligible.where((e) => seenIds.contains(e.candidate.id)),
+            ];
+            final random =
+                prepared.entries.entries
+                    .where((e) => e.value.post['random_position'] != null)
+                    .toList()
+                  ..sort((a, b) {
+                    final repeatedA = seenIds.contains(a.key) ? 1 : 0,
+                        repeatedB = seenIds.contains(b.key) ? 1 : 0;
+                    if (repeatedA != repeatedB) {
+                      return repeatedA.compareTo(repeatedB);
+                    }
+                    final order = (a.value.post['random_position'] as num)
+                        .compareTo(b.value.post['random_position'] as num);
+                    return order == 0 ? a.key.compareTo(b.key) : order;
+                  });
+            return size <= 0
+                ? <MixedFeedEntry>[]
+                : mixAdaptivePage(
+                    ranked: available,
+                    randomOrderedIds: random.map((e) => e.key).toList(),
+                    pageSize: size,
+                    config: config,
+                    randomBasisPoints: adaptiveRandomBasisPoints(
+                      context.interest,
+                      policy,
+                    ),
+                    startSequence: context.sequence,
+                    topicGaps: {
+                      for (final e in context.topicInterest.entries)
+                        e.key: topicGap(e.value, policy),
+                    },
+                    lastTopicSequence: context.lastTopicSequence,
+                  );
+          }
+
+          var mixed = mixCurrent();
+          // D-061: seen suppression is a soft freshness preference in sparse
+          // supply. Never relax current-plan dedup or viewer authorization.
+          if (mixed.length < math.min(10, size) && seenIds.isNotEmpty) {
+            final extra = await tx.execute(
+              candidateRetrievalSql,
+              parameters: candidateRetrievalParameters(
+                viewerId: viewerId,
+                config: config,
+                candidateLimit: readCandidateLimit(),
+                randomSeed: plan['seed'].toString(),
+                excludedIds: {
+                  ...delivered,
+                  ...banned,
+                  ...prepared.entries.keys,
+                }.toList(),
+                audienceWindowStart: window,
+              ),
+            );
+            if (extra.isNotEmpty) {
+              prepared = _scoreCandidateRows(
+                [...rows, ...extra],
+                _attentionProfile(profile, context, config, policy),
+                config,
+              );
+              mixed = mixCurrent();
+            }
+          }
           final rejected = await feedback.reserveAudience(
             tx,
             viewerId,
@@ -366,7 +407,7 @@ extension AdaptiveFeedServing on RecommendationService {
       JOIN app_user u ON u.id=c.author_id AND u.state='active' JOIN user_profile p ON p.user_id=u.id
       WHERE r.id=ANY($2::uuid[]) AND r.user_id=$1 AND r.expires_at>now() AND c.kind='text' AND c.visibility='public'
         AND c.status='published' AND c.deleted_at IS NULL
-        AND (p.visibility='public' OR EXISTS(SELECT 1 FROM account_follow f WHERE f.follower_id=$1 AND f.followed_id=u.id))
+        AND (p.visibility='public' OR u.id=$1 OR EXISTS(SELECT 1 FROM account_follow f WHERE f.follower_id=$1 AND f.followed_id=u.id))
         AND NOT EXISTS(SELECT 1 FROM account_block b WHERE (b.blocker_id=$1 AND b.blocked_id=u.id) OR (b.blocker_id=u.id AND b.blocked_id=$1))
         AND NOT EXISTS(SELECT 1 FROM account_mute m WHERE m.muter_id=$1 AND m.muted_id=u.id)
         AND NOT EXISTS(SELECT 1 FROM feed_content_hide h WHERE h.user_id=$1 AND h.content_id=c.id)''',

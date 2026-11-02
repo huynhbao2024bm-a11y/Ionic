@@ -481,36 +481,39 @@ class _HomeScreenState extends State<HomeScreen> {
                   : _load(),
               child: ListView(
                 key: _feedViewport,
-                padding: const EdgeInsets.fromLTRB(22, 10, 22, 34),
+                padding: const EdgeInsets.fromLTRB(0, 10, 0, 34),
                 children: [
-                  TextField(
-                    controller: _search,
-                    focusNode: _searchFocus,
-                    maxLength: 80,
-                    textInputAction: TextInputAction.search,
-                    onSubmitted: (value) {
-                      if (value.trim().length < 2 || widget.user == null) {
-                        return;
-                      }
-                      _searchDelay?.cancel();
-                      unawaited(_rememberSearch());
-                      _runSearch(value.trim());
-                    },
-                    onChanged: _onSearch,
-                    decoration: InputDecoration(
-                      counterText: '',
-                      prefixIcon: const Icon(Icons.search_rounded),
-                      hintText: 'Tìm bài viết hoặc tài khoản',
-                      suffixIcon: _search.text.isEmpty
-                          ? null
-                          : IconButton(
-                              onPressed: () {
-                                _search.clear();
-                                _onSearch('');
-                                setState(() {});
-                              },
-                              icon: const Icon(Icons.close_rounded),
-                            ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: TextField(
+                      controller: _search,
+                      focusNode: _searchFocus,
+                      maxLength: 80,
+                      textInputAction: TextInputAction.search,
+                      onSubmitted: (value) {
+                        if (value.trim().length < 2 || widget.user == null) {
+                          return;
+                        }
+                        _searchDelay?.cancel();
+                        unawaited(_rememberSearch());
+                        _runSearch(value.trim());
+                      },
+                      onChanged: _onSearch,
+                      decoration: InputDecoration(
+                        counterText: '',
+                        prefixIcon: const Icon(Icons.search_rounded),
+                        hintText: 'Tìm bài viết hoặc tài khoản',
+                        suffixIcon: _search.text.isEmpty
+                            ? null
+                            : IconButton(
+                                onPressed: () {
+                                  _search.clear();
+                                  _onSearch('');
+                                  setState(() {});
+                                },
+                                icon: const Icon(Icons.close_rounded),
+                              ),
+                      ),
                     ),
                   ),
                   if (_searchFocus.hasFocus &&
@@ -522,7 +525,10 @@ class _HomeScreenState extends State<HomeScreen> {
                     _searchSection()
                   else ...[
                     const SizedBox(height: 16),
-                    _ComposerEntry(onTap: widget.onCompose),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: _ComposerEntry(onTap: widget.onCompose),
+                    ),
                     if (_error != null)
                       _ErrorCard(message: _error!, onRetry: _load),
                     if (_busy && _posts.isEmpty)
@@ -691,9 +697,18 @@ class PostCard extends StatelessWidget {
   final bool showMenu;
 
   @override
-  Widget build(BuildContext context) => Card(
+  Widget build(BuildContext context) => Container(
+    decoration: BoxDecoration(
+      border: Border(
+        bottom: BorderSide(
+          color: Theme.of(
+            context,
+          ).colorScheme.outlineVariant.withValues(alpha: .5),
+        ),
+      ),
+    ),
     child: Padding(
-      padding: const EdgeInsets.fromLTRB(20, 17, 18, 9),
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 7),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -785,7 +800,7 @@ class PostCard extends StatelessWidget {
               padding: const EdgeInsets.only(bottom: 12),
               child: _PostAttachments(api: api, attachments: post.attachments),
             ),
-          const Divider(height: 1),
+          const SizedBox(height: 3),
           Row(
             children: [
               _PostAction(
@@ -3770,12 +3785,23 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _connections(String kind) async {
-    final profile=_profile; if(profile==null) return;
-    final target=_target;
-    await showIonicDialog<void>(context:context,builder:(context)=>ConnectionsDialog(api:widget.api,handle:profile.handle,isSelf:profile.isSelf,initialKind:kind,
-      onOpenProfile:(handle)=>widget.onOpenProfile?.call(handle),onConversation:widget.onOpenConversation));
-    if(mounted && _target==target) await _load();
+    final profile = _profile;
+    if (profile == null) return;
+    final target = _target;
+    await showIonicDialog<void>(
+      context: context,
+      builder: (context) => ConnectionsDialog(
+        api: widget.api,
+        handle: profile.handle,
+        isSelf: profile.isSelf,
+        initialKind: kind,
+        onOpenProfile: (handle) => widget.onOpenProfile?.call(handle),
+        onConversation: widget.onOpenConversation,
+      ),
+    );
+    if (mounted && _target == target) await _load();
   }
+
   @override
   Widget build(BuildContext context) {
     if (widget.user == null) {
@@ -3882,8 +3908,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       runSpacing: 8,
                       children: [
                         Text('${profile.postCount} bài viết'),
-                        TextButton(onPressed:()=>_connections('followers'),child:Text('${profile.followerCount} người theo dõi')),
-                        TextButton(onPressed:()=>_connections('following'),child:Text('${profile.followingCount} đang theo dõi')),
+                        TextButton(
+                          onPressed: () => _connections('followers'),
+                          child: Text(
+                            '${profile.followerCount} người theo dõi',
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () => _connections('following'),
+                          child: Text(
+                            '${profile.followingCount} đang theo dõi',
+                          ),
+                        ),
                       ],
                     ),
                     if (!profile.isSelf) ...[

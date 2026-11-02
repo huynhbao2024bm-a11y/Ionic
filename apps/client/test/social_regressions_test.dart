@@ -27,6 +27,50 @@ Map<String, Object?> post(String id) => {
 };
 
 void main() {
+  testWidgets('Phone feed uses flat full-width post rows', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    const body =
+        'Một bài viết dài đủ để kiểm tra vùng đọc rộng trên điện thoại và không còn khung bong bóng chật chội.';
+    final api = IonicApi(
+      baseUrl: 'http://local/api/v1',
+      client: MockClient(
+        (_) async => json({
+          'items': [
+            {...post('flat'), 'body': body},
+          ],
+        }),
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: HomeScreen(
+            api: api,
+            user: user,
+            refreshToken: 0,
+            onAuthenticate: ({required mode}) async {},
+            onCompose: () {},
+            onOpenProfile: (_) {},
+            onToast: (_) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final content = find.byWidgetPredicate(
+      (w) => w is SelectableText && w.data == body,
+    );
+    expect(
+      find.ancestor(of: content, matching: find.byType(Card)),
+      findsNothing,
+    );
+    expect(tester.getSize(content).width, greaterThanOrEqualTo(340));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
   test('Avatar is a bounded square JPEG; invalid input is rejected', () {
     final portrait = img.Image(width: 600, height: 900);
     final output = optimizeAvatar(Uint8List.fromList(img.encodePng(portrait)));

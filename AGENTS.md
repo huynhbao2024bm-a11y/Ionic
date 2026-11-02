@@ -50,6 +50,7 @@ When changing a behavior or contract, update its canonical document in the same 
 
 ## Delivery expectations
 
+- Before each source push, report which requested changes are complete, which checks actually passed, and what remains unverified. Continue after the report unless the user explicitly asks for an approval pause.
 - State assumptions explicitly in documentation and code reviews.
 - Keep API contracts and data retention aligned across client, API, workers, and documentation.
 - Update the relevant design document whenever implementation changes a user-visible contract, data event, ranking rule, or security boundary.

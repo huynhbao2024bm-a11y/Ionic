@@ -15,7 +15,7 @@ void main() {
         release,
         isNotNull,
         reason:
-            'Run the profile harness (versionCode 3) after publishing the intended split-ABI preview.',
+            'Run the non-split profile harness after publishing the intended split-ABI preview.',
       );
       var progress = 0.0;
       final path = await service.download(

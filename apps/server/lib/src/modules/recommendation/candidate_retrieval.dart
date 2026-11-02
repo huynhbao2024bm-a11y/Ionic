@@ -48,7 +48,7 @@ const candidateRetrievalSql = r'''WITH learned_positive_labels AS (
            AND c.created_at <= $3
            AND NOT(c.id=ANY($12::uuid[]))
            AND (c.author_id=$2 OR c.id NOT IN(SELECT content_id FROM exhausted_audience))
-           AND (p.visibility = 'public' OR EXISTS (
+           AND (p.visibility = 'public' OR u.id = $2 OR EXISTS (
              SELECT 1 FROM account_follow f WHERE f.follower_id = $2 AND f.followed_id = u.id
            ))
            AND NOT EXISTS (SELECT 1 FROM account_block b

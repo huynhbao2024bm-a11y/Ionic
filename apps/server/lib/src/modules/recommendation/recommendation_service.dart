@@ -824,7 +824,7 @@ double _semanticAversion(Map<String, dynamic> row) {
 
 ({Map<String, _CandidateEntry> entries, List<RankedCandidate> scored})
 _scoreCandidateRows(
-  Result rows,
+  Iterable<ResultRow> rows,
   ViewerProfile profile,
   RankerConfig rankerConfig,
 ) {
